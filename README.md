@@ -10,6 +10,16 @@ npx cctrack
 No daemon, no install, nothing running in the background. cctrack reads what Claude
 Code has already written to disk and derives the rest.
 
+## Install
+
+`npx cctrack` needs no install at all. To keep it around:
+
+```sh
+npm install -g cctrack
+```
+
+Node 18.17+, and no runtime dependencies — the install is one package.
+
 ## Why
 
 Claude Code knows what your sessions are doing, but it doesn't keep a record. The
