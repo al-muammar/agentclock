@@ -1,0 +1,53 @@
+{
+  "name": "cctrack",
+  "version": "0.1.0",
+  "description": "See how many Claude Code sessions you run, how many are actually working, and how long they live.",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "sessions",
+    "dashboard",
+    "stats",
+    "cli"
+  ],
+  "homepage": "https://github.com/al-muammar/cctrack#readme",
+  "bugs": "https://github.com/al-muammar/cctrack/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/al-muammar/cctrack.git"
+  },
+  "license": "MIT",
+  "author": "al-muammar",
+  "type": "module",
+  "bin": {
+    "cctrack": "bin/cctrack.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome lint --error-on-warnings",
+    "lint:fix": "biome lint --write",
+    "format": "biome format --write",
+    "format:check": "biome format",
+    "check": "biome check --error-on-warnings",
+    "check:fix": "biome check --write",
+    "pretest": "npm run build",
+    "test": "node --test test/*.test.js",
+    "start": "npm run build && node bin/cctrack.js"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
