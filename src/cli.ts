@@ -5,7 +5,7 @@ import path from 'node:path';
 import { Anonymizer } from './project.js';
 import { computeStats } from './stats.js';
 import { duration, parseWindow } from './format.js';
-import { cctrackDir, defaultReportPath } from './paths.js';
+import { defaultReportPath } from './paths.js';
 import { readLiveSessions } from './registry.js';
 import { renderReport } from './render/html.js';
 import { renderNow, renderStats } from './render/term.js';

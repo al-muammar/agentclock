@@ -111,7 +111,12 @@ export interface VBarOptions {
  * rotated into a horizontal chart.
  */
 export function vBarChart(items: VBarItem[], options: VBarOptions = {}): string {
-  const { width = 720, height = 190, barClass = 'bar-busy', maxFormat = (v) => String(v) } = options;
+  const {
+    width = 720,
+    height = 190,
+    barClass = 'bar-busy',
+    maxFormat = (v) => String(v),
+  } = options;
   if (items.length === 0) return '';
 
   const padLeft = 46;

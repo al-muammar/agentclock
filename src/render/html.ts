@@ -1,4 +1,4 @@
-import { Anonymizer } from '../project.js';
+import type { Anonymizer } from '../project.js';
 import { dateTime, duration, hours, shortDate, truncate } from '../format.js';
 import { esc, hBarChart, vBarChart, type BarItem, type VBarItem } from './svg.js';
 import { ACTIVE_STATUSES, type LiveSession } from '../types.js';
