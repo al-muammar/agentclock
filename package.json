@@ -35,11 +35,18 @@
     "build": "tsc -p tsconfig.json",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/*.test.js",
+    "lint": "biome lint --error-on-warnings",
+    "lint:fix": "biome lint --write",
+    "format": "biome format --write",
+    "format:check": "biome format",
+    "check": "biome check --error-on-warnings",
+    "check:fix": "biome check --write",
     "pretest": "npm run build",
+    "test": "node --test test/*.test.js",
     "start": "npm run build && node bin/cctrack.js"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.8",
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2"
   }

@@ -10,7 +10,7 @@ import path from 'node:path';
  */
 export function claudeRoot(): string {
   const override = process.env['CLAUDE_CONFIG_DIR'];
-  if (override && override.trim()) return path.resolve(override.trim());
+  if (override?.trim()) return path.resolve(override.trim());
   return path.join(homedir(), '.claude');
 }
 
@@ -27,7 +27,7 @@ export function sessionsDir(): string {
 /** Where cctrack keeps its own accumulated history. */
 export function cctrackDir(): string {
   const override = process.env['CCTRACK_DIR'];
-  if (override && override.trim()) return path.resolve(override.trim());
+  if (override?.trim()) return path.resolve(override.trim());
   return path.join(homedir(), '.cctrack');
 }
 

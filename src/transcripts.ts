@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
@@ -42,7 +43,7 @@ export async function listTranscripts(): Promise<TranscriptFile[]> {
   const files: TranscriptFile[] = [];
   for (const slug of slugs) {
     const dir = path.join(root, slug);
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {

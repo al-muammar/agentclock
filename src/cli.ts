@@ -69,7 +69,8 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
         const value = argv[++i];
         if (!value) return { options, error: '--since needs a window, e.g. --since 7d' };
         const ms = parseWindow(value);
-        if (ms === null) return { options, error: `Not a valid window: ${value}. Try 7d, 24h or 90m.` };
+        if (ms === null)
+          return { options, error: `Not a valid window: ${value}. Try 7d, 24h or 90m.` };
         options.since = ms;
         break;
       }

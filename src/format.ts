@@ -51,7 +51,7 @@ export function padStart(value: string, width: number): string {
  */
 export function parseWindow(value: string): number | null {
   const m = /^(\d+(?:\.\d+)?)\s*([smhdw])$/i.exec(value.trim());
-  if (!m || !m[1] || !m[2]) return null;
+  if (!m?.[1] || !m[2]) return null;
   const n = Number(m[1]);
   if (!Number.isFinite(n) || n <= 0) return null;
   const unit = m[2].toLowerCase();

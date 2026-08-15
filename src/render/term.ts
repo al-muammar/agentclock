@@ -1,4 +1,4 @@
-import { attribute, Anonymizer } from '../project.js';
+import { attribute, type Anonymizer } from '../project.js';
 import { duration, pad, padStart, truncate } from '../format.js';
 import { ACTIVE_STATUSES, type LiveSession } from '../types.js';
 import type { Stats } from '../stats.js';

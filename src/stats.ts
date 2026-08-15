@@ -51,12 +51,6 @@ export interface Stats {
   sessions: SessionRecord[];
 }
 
-function startOfLocalDay(t: number): number {
-  const d = new Date(t);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
 function nextLocalDay(t: number): number {
   const d = new Date(t);
   d.setHours(0, 0, 0, 0);

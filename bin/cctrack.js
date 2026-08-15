@@ -12,6 +12,8 @@ if (major < 18 || (major === 18 && minor < 17)) {
 try {
   process.exitCode = await run(process.argv.slice(2));
 } catch (err) {
-  process.stderr.write(`\n  cctrack failed: ${err instanceof Error ? err.message : String(err)}\n\n`);
+  process.stderr.write(
+    `\n  cctrack failed: ${err instanceof Error ? err.message : String(err)}\n\n`,
+  );
   process.exitCode = 1;
 }

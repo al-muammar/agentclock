@@ -22,7 +22,7 @@ const WORKTREE_RE = /^(.*)\/\.claude\/worktrees\/([^/]+)(?:\/.*)?$/;
 export function attribute(cwd: string): Attribution {
   const normalized = cwd.replace(/\/+$/, '');
   const m = WORKTREE_RE.exec(normalized);
-  if (m && m[1] && m[2]) {
+  if (m?.[1] && m[2]) {
     return { project: m[1], label: m[2] };
   }
   return { project: normalized, label: path.basename(normalized) || normalized };
