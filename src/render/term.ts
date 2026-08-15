@@ -107,6 +107,85 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
   return lines.join('\n');
 }
 
+/**
+ * Per-day activity timeline for the terminal.
+ *
+ * Each row is one day split into equal-width cells; the block character encodes
+ * how much of that cell had an agent working, so a burst is visible even when a
+ * cell covers 30 minutes. Ramp characters carry the magnitude, colour only
+ * reinforces it — this stays readable piped to a file or on a mono terminal.
+ */
+export function renderTimeline(stats: Stats, columns = 72): string {
+  if (stats.timeline.length === 0) {
+    return `${c.dim('No agent activity in the selected window.')}\n`;
+  }
+
+  const DAY = 86_400_000;
+  const cells = Math.max(24, Math.min(columns, 144));
+  const cellMs = DAY / cells;
+  const ramp = [' ', '▁', '▃', '▅', '▇', '█'];
+
+  const lines: string[] = [''];
+  lines.push(
+    c.dim(`  Each row is one day · ${cells} cells · left edge 00:00, right edge 24:00 (local)`),
+  );
+  lines.push('');
+
+  // Hour ruler, aligned to the cell grid.
+  let ruler = '';
+  for (let hour = 0; hour < 24; hour += 3) {
+    const target = Math.round((hour / 24) * cells);
+    if (ruler.length > target) continue;
+    ruler += ' '.repeat(target - ruler.length) + String(hour).padStart(2, '0');
+  }
+  lines.push(`  ${' '.repeat(11)}${c.dim(ruler)}`);
+
+  for (const day of [...stats.timeline].reverse()) {
+    // Fraction of each cell that had at least one agent working, plus that cell's
+    // peak level, so the row shows both when and how heavily.
+    const filled = new Array<number>(cells).fill(0);
+    const peak = new Array<number>(cells).fill(0);
+
+    for (const interval of day.intervals) {
+      const from = Math.max(0, interval.start - day.midnight);
+      const to = Math.min(DAY, interval.end - day.midnight);
+      if (to <= from) continue;
+      const firstCell = Math.floor(from / cellMs);
+      const lastCell = Math.min(cells - 1, Math.floor((to - 1) / cellMs));
+      for (let i = firstCell; i <= lastCell; i++) {
+        const cellStart = i * cellMs;
+        const overlap = Math.min(to, cellStart + cellMs) - Math.max(from, cellStart);
+        if (overlap <= 0) continue;
+        filled[i] = Math.min(1, (filled[i] ?? 0) + overlap / cellMs);
+        peak[i] = Math.max(peak[i] ?? 0, interval.level);
+      }
+    }
+
+    let row = '';
+    for (let i = 0; i < cells; i++) {
+      const fraction = filled[i] ?? 0;
+      if (fraction <= 0) {
+        row += c.idle('·');
+        continue;
+      }
+      const index = Math.max(1, Math.min(ramp.length - 1, Math.ceil(fraction * (ramp.length - 1))));
+      row += c.busy(ramp[index] ?? '█');
+    }
+
+    const date = new Date(day.midnight).toLocaleDateString(undefined, {
+      weekday: 'short',
+      day: '2-digit',
+      month: 'short',
+    });
+    lines.push(
+      `  ${pad(date, 11)}${row} ${c.dim(padStart(duration(day.activeMs), 8))} ${c.dim(`peak ${day.peak}`)}`,
+    );
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
 /** Compact historical summary for the terminal. */
 export function renderStats(stats: Stats, anon: Anonymizer, limit = 8): string {
   const { summary } = stats;

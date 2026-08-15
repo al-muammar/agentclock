@@ -31,9 +31,22 @@ being a rule the tool applies.
 cctrack                # build the dashboard and open it
 cctrack now            # what's running right now
 cctrack watch          # live view, refreshing in place
+cctrack timeline       # per-day activity timeline
 cctrack stats          # historical summary in the terminal
 cctrack report --since 7d --anonymize -o week.html
 ```
+
+`cctrack timeline` shows one row per day, midnight to midnight, so you can see
+*when* agents were working rather than just how long:
+
+```
+             00      03      06      09      12      15      18      21
+  Sat 15 Aug ██······················▇▃···▇████████▁·▁██·▇█████▃▁▅████  20h 31m  peak 5
+  Fri 14 Aug ·▇··▃·····················▃▅···▇█▇····▅▇·····▃··········▅   2h 47m  peak 2
+```
+
+The dashboard has the same view with colour intensity for how many agents were
+running at once, and hover detail for exact times and projects.
 
 ### Options
 

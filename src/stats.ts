@@ -43,12 +43,65 @@ export interface ProjectBucket {
   turns: number;
 }
 
+/** One day's worth of activity, positioned within the day. */
+export interface TimelineDay {
+  day: string;
+  /** Local midnight that starts this day. */
+  midnight: number;
+  activeMs: number;
+  peak: number;
+  /** Intervals clipped to this day, so each is within [midnight, midnight+24h). */
+  intervals: Interval[];
+}
+
 export interface Stats {
   summary: Summary;
   concurrency: ConcurrencyBucket[];
   days: DayBucket[];
   projects: ProjectBucket[];
   sessions: SessionRecord[];
+  timeline: TimelineDay[];
+}
+
+/** Local midnight for a `YYYY-MM-DD` key. */
+export function midnightOf(day: string): number {
+  const [y, m, d] = day.split('-').map(Number);
+  return new Date(y!, (m ?? 1) - 1, d ?? 1, 0, 0, 0, 0).getTime();
+}
+
+/** Split intervals across local day boundaries and group them by day. */
+export function buildTimeline(intervals: Interval[], days: DayBucket[]): TimelineDay[] {
+  const byDay = new Map<string, Interval[]>();
+
+  for (const interval of intervals) {
+    let cursor = interval.start;
+    while (cursor < interval.end) {
+      const boundary = Math.min(nextLocalDay(cursor), interval.end);
+      const key = dayKey(cursor);
+      let list = byDay.get(key);
+      if (!list) {
+        list = [];
+        byDay.set(key, list);
+      }
+      list.push({
+        start: cursor,
+        end: boundary,
+        level: interval.level,
+        projects: interval.projects,
+      });
+      cursor = boundary;
+    }
+  }
+
+  return days
+    .filter((d) => byDay.has(d.day) || d.activeMs > 0)
+    .map((d) => ({
+      day: d.day,
+      midnight: midnightOf(d.day),
+      activeMs: d.activeMs,
+      peak: d.peak,
+      intervals: byDay.get(d.day) ?? [],
+    }));
 }
 
 function nextLocalDay(t: number): number {
@@ -85,6 +138,16 @@ function splitByDay(span: Span): Array<{ day: string; ms: number; at: number }> 
  * Sessions are merged individually before they get here, so one session contributes
  * at most 1 to the level at any instant no matter how many subagents it was running.
  */
+/** A stretch during which a fixed set of sessions was working. */
+export interface Interval {
+  start: number;
+  end: number;
+  /** How many sessions were working — always equal to `projects.length`. */
+  level: number;
+  /** Which projects were working, for the timeline tooltip. */
+  projects: string[];
+}
+
 export interface ConcurrencyProfile {
   buckets: ConcurrencyBucket[];
   peak: number;
@@ -92,17 +155,27 @@ export interface ConcurrencyProfile {
   coveredMs: number;
   /** Highest simultaneous level reached on each local day. */
   dayPeaks: Map<string, number>;
+  /** Every stretch with at least one session working, in order. */
+  intervals: Interval[];
 }
 
 export function concurrencyProfile(sessions: SessionRecord[]): ConcurrencyProfile {
-  const events: Array<[number, number]> = [];
+  const byId = new Map(sessions.map((s) => [s.sessionId, s]));
+  const events: Array<[number, number, string]> = [];
   for (const s of sessions) {
     for (const span of s.spans) {
-      events.push([span.start, 1], [span.end, -1]);
+      events.push([span.start, 1, s.sessionId], [span.end, -1, s.sessionId]);
     }
   }
   if (events.length === 0) {
-    return { buckets: [], peak: 0, peakAt: 0, coveredMs: 0, dayPeaks: new Map() };
+    return {
+      buckets: [],
+      peak: 0,
+      peakAt: 0,
+      coveredMs: 0,
+      dayPeaks: new Map(),
+      intervals: [],
+    };
   }
 
   // Close before open at the same instant, so touching spans don't read as overlap.
@@ -110,14 +183,28 @@ export function concurrencyProfile(sessions: SessionRecord[]): ConcurrencyProfil
 
   const atLevel = new Map<number, number>();
   const dayPeaks = new Map<string, number>();
+  const intervals: Interval[] = [];
+  // Counted, not a plain Set: one session's merged spans never overlap, but the
+  // same session id must survive an adjacent close/open pair at the same instant.
+  const active = new Map<string, number>();
   let level = 0;
   let peak = 0;
   let peakAt = events[0]![0];
   let prev = events[0]![0];
 
-  for (const [t, delta] of events) {
+  const projectsOf = (): string[] => {
+    const names = new Set<string>();
+    for (const id of active.keys()) {
+      const session = byId.get(id);
+      if (session) names.add(session.project);
+    }
+    return [...names];
+  };
+
+  for (const [t, delta, sessionId] of events) {
     if (t > prev && level > 0) {
       atLevel.set(level, (atLevel.get(level) ?? 0) + (t - prev));
+
       // Attribute the level to every local day this interval touches. Done inside
       // the one sweep: computing it per day instead meant re-sweeping every session
       // once per day, which cost 12s of a 15s run on a 30-day window.
@@ -125,8 +212,24 @@ export function concurrencyProfile(sessions: SessionRecord[]): ConcurrencyProfil
         const current = dayPeaks.get(piece.day) ?? 0;
         if (level > current) dayPeaks.set(piece.day, level);
       }
+
+      const last = intervals[intervals.length - 1];
+      if (last && last.end === prev && last.level === level) {
+        last.end = t; // extend rather than emit a second rect at the same level
+      } else {
+        intervals.push({ start: prev, end: t, level, projects: projectsOf() });
+      }
     }
+
     level += delta;
+    if (delta > 0) {
+      active.set(sessionId, (active.get(sessionId) ?? 0) + 1);
+    } else {
+      const count = (active.get(sessionId) ?? 1) - 1;
+      if (count <= 0) active.delete(sessionId);
+      else active.set(sessionId, count);
+    }
+
     prev = t;
     if (level > peak) {
       peak = level;
@@ -139,7 +242,7 @@ export function concurrencyProfile(sessions: SessionRecord[]): ConcurrencyProfil
     .sort((a, b) => a.level - b.level);
 
   const coveredMs = buckets.reduce((sum, b) => sum + b.ms, 0);
-  return { buckets, peak, peakAt, coveredMs, dayPeaks };
+  return { buckets, peak, peakAt, coveredMs, dayPeaks, intervals };
 }
 
 export function computeStats(
@@ -166,7 +269,7 @@ export function computeStats(
 
   sessions.sort((a, b) => b.activeMs - a.activeMs || b.endedAt - a.endedAt);
 
-  const { buckets, peak, peakAt, coveredMs, dayPeaks } = concurrencyProfile(sessions);
+  const { buckets, peak, peakAt, coveredMs, dayPeaks, intervals } = concurrencyProfile(sessions);
 
   const activeMs = sessions.reduce((sum, s) => sum + s.activeMs, 0);
   const turns = sessions.reduce((sum, s) => sum + s.turns, 0);
@@ -256,5 +359,6 @@ export function computeStats(
     days,
     projects,
     sessions,
+    timeline: buildTimeline(intervals, days),
   };
 }

@@ -1,6 +1,14 @@
 import type { Anonymizer } from '../project.js';
 import { dateTime, duration, hours, shortDate, truncate } from '../format.js';
-import { esc, hBarChart, vBarChart, type BarItem, type VBarItem } from './svg.js';
+import {
+  esc,
+  hBarChart,
+  timelineChart,
+  vBarChart,
+  type BarItem,
+  type TimelineRow,
+  type VBarItem,
+} from './svg.js';
 import { ACTIVE_STATUSES, type LiveSession } from '../types.js';
 import type { Stats } from '../stats.js';
 
@@ -29,6 +37,13 @@ const STYLE = `
     --waiting: #B4560F;
     --idle: #7C8794;
     --track: #E3E9EC;
+
+    /* Sequential ramp for concurrency. One hue, light to dark, lightness
+       monotonic — it encodes a magnitude, not an identity. */
+    --lv1: #C4E4DD;
+    --lv2: #84C8BC;
+    --lv3: #3BA391;
+    --lv4: #00786A;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -45,6 +60,12 @@ const STYLE = `
       --waiting: #D07E33;
       --idle: #6D7986;
       --track: #222A31;
+
+      /* Dark surfaces invert the ramp's direction: dim to bright as level rises. */
+      --lv1: #1C4A44;
+      --lv2: #276F65;
+      --lv3: #2F9A88;
+      --lv4: #45C4AC;
     }
   }
 
@@ -147,6 +168,16 @@ const STYLE = `
 
   .bar-busy { fill: var(--busy); }
   .track { fill: var(--track); }
+  .lv1 { fill: var(--lv1); }
+  .lv2 { fill: var(--lv2); }
+  .lv3 { fill: var(--lv3); }
+  .lv4 { fill: var(--lv4); }
+  .ramp { display: flex; align-items: center; gap: 7px; }
+  .ramp .step { width: 22px; height: 10px; border-radius: 2px; }
+  .ramp .step.lv1 { background: var(--lv1); }
+  .ramp .step.lv2 { background: var(--lv2); }
+  .ramp .step.lv3 { background: var(--lv3); }
+  .ramp .step.lv4 { background: var(--lv4); }
   .axis { stroke: var(--line); stroke-width: 1; }
   .grid { stroke: var(--line-soft); stroke-width: 1; }
   .row-label,
@@ -378,6 +409,64 @@ function dailySection(stats: Stats): string {
   </section>`;
 }
 
+const DAY_MS = 86_400_000;
+
+function clockTime(t: number): string {
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function timelineSection(stats: Stats, anon: Anonymizer): string {
+  if (stats.timeline.length === 0) return '';
+
+  // Newest day first — the recent past is what gets looked at.
+  const days = [...stats.timeline].reverse().slice(0, 45);
+
+  const rows: TimelineRow[] = days.map((day) => ({
+    label: new Date(day.midnight).toLocaleDateString(undefined, {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+    }),
+    total: duration(day.activeMs),
+    bars: day.intervals.map((interval) => {
+      const names = interval.projects.map((p) => anon.projectLabel(p));
+      const shown = names.slice(0, 3).join(', ');
+      const more = names.length > 3 ? ` +${names.length - 3} more` : '';
+      return {
+        from: Math.max(0, (interval.start - day.midnight) / DAY_MS),
+        to: Math.min(1, (interval.end - day.midnight) / DAY_MS),
+        level: interval.level,
+        title: `${clockTime(interval.start)}–${clockTime(interval.end)} · ${interval.level} agent${
+          interval.level === 1 ? '' : 's'
+        } working · ${duration(interval.end - interval.start)}${shown ? ` · ${shown}${more}` : ''}`,
+      };
+    }),
+  }));
+
+  const truncated = stats.timeline.length > days.length;
+
+  return `  <section>
+    <h2>When agents were working</h2>
+    <p class="sub">Each row is one day, midnight to midnight, in your local time${
+      truncated ? ` · showing the most recent ${days.length} of ${stats.timeline.length} days` : ''
+    }</p>
+    <figure>${timelineChart(rows)}
+      <div class="legend" style="margin-top:16px">
+        <span class="key ramp">
+          <span>1</span>
+          <span class="step lv1"></span>
+          <span class="step lv2"></span>
+          <span class="step lv3"></span>
+          <span class="step lv4"></span>
+          <span>4+ agents at once</span>
+        </span>
+        <span class="key">hover a segment for the exact times and projects</span>
+      </div>
+    </figure>
+  </section>`;
+}
+
 function projectSection(stats: Stats, anon: Anonymizer): string {
   if (stats.projects.length === 0) return '';
 
@@ -494,6 +583,7 @@ export function renderReport(input: ReportInput): string {
 ${tiles}
     </div>
   </section>`,
+    timelineSection(stats, anon),
     concurrencySection(stats),
     dailySection(stats),
     projectSection(stats, anon),

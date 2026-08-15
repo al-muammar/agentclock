@@ -89,6 +89,89 @@ ${axisMarkup}
   </svg>`;
 }
 
+export interface TimelineRow {
+  /** Left-hand label, e.g. "Fri 15 Aug". */
+  label: string;
+  /** Right-hand total, e.g. "4h 12m". */
+  total: string;
+  /** Bars positioned by fraction of the day, 0 = midnight, 1 = next midnight. */
+  bars: Array<{ from: number; to: number; level: number; title: string }>;
+}
+
+export interface TimelineOptions {
+  width?: number;
+  labelWidth?: number;
+  totalWidth?: number;
+  rowHeight?: number;
+  barHeight?: number;
+  /** Highest level that gets its own ramp step; above this the top step is reused. */
+  maxLevel?: number;
+  /** Hour marks along the axis. */
+  hourTicks?: number[];
+}
+
+/**
+ * A day-by-day activity timeline: one row per day, midnight to midnight, with
+ * segments where agents were working. Colour intensity encodes how many were
+ * working at once — a sequential ramp, since it is a magnitude, not an identity.
+ */
+export function timelineChart(rows: TimelineRow[], options: TimelineOptions = {}): string {
+  const {
+    width = 720,
+    labelWidth = 88,
+    totalWidth = 62,
+    rowHeight = 22,
+    barHeight = 13,
+    maxLevel = 4,
+    hourTicks = [0, 3, 6, 9, 12, 15, 18, 21, 24],
+  } = options;
+
+  if (rows.length === 0) return '';
+
+  const trackWidth = width - labelWidth - totalWidth;
+  const headerHeight = 18;
+  const height = rows.length * rowHeight + headerHeight + 8;
+
+  const grid = hourTicks
+    .map((hour) => {
+      const x = labelWidth + (hour / 24) * trackWidth;
+      return `    <line class="grid" x1="${x.toFixed(1)}" y1="${headerHeight - 4}" x2="${x.toFixed(1)}" y2="${headerHeight + rows.length * rowHeight}"/>
+    <text class="tick" x="${x.toFixed(1)}" y="${headerHeight - 9}" text-anchor="${hour === 0 ? 'start' : hour === 24 ? 'end' : 'middle'}">${hour === 24 ? '24' : String(hour).padStart(2, '0')}</text>`;
+    })
+    .join('\n');
+
+  const body = rows
+    .map((row, index) => {
+      const y = headerHeight + index * rowHeight;
+      const barY = y + (rowHeight - barHeight) / 2;
+
+      const segments = row.bars
+        .map((bar) => {
+          const x = labelWidth + bar.from * trackWidth;
+          // Floor at 1.5px: a two-minute burst must still be visible on a 24h axis.
+          const w = Math.max(1.5, (bar.to - bar.from) * trackWidth);
+          const step = Math.min(Math.max(1, bar.level), maxLevel);
+          return `      <rect class="lv${step}" x="${x.toFixed(2)}" y="${barY}" width="${w.toFixed(2)}" height="${barHeight}" rx="1.5"><title>${esc(bar.title)}</title></rect>`;
+        })
+        .join('\n');
+
+      return `    <g>
+      <text class="row-label" x="${labelWidth - 10}" y="${barY + barHeight / 2 + 4}" text-anchor="end">${esc(row.label)}</text>
+      <rect class="track" x="${labelWidth}" y="${barY}" width="${trackWidth}" height="${barHeight}" rx="2"/>
+${segments}
+      <text class="row-value" x="${labelWidth + trackWidth + 8}" y="${barY + barHeight / 2 + 4}">${esc(row.total)}</text>
+    </g>`;
+    })
+    .join('\n');
+
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(
+    `Activity timeline, ${rows.length} days, midnight to midnight, darker segments mean more agents working at once`,
+  )}">
+${grid}
+${body}
+  </svg>`;
+}
+
 export interface VBarItem {
   label: string;
   /** Shown only on some columns, to keep the axis readable. */

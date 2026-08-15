@@ -9,7 +9,14 @@ import { defaultReportPath } from './paths.js';
 import { loadArchive, mergeArchive, saveArchive, emptyArchive } from './archive.js';
 import { readLiveSessions } from './registry.js';
 import { renderReport } from './render/html.js';
-import { CLEAR_SCREEN, HIDE_CURSOR, SHOW_CURSOR, renderNow, renderStats } from './render/term.js';
+import {
+  CLEAR_SCREEN,
+  HIDE_CURSOR,
+  SHOW_CURSOR,
+  renderNow,
+  renderStats,
+  renderTimeline,
+} from './render/term.js';
 import { scanTranscripts } from './transcripts.js';
 
 export const VERSION = '0.1.0';
@@ -20,6 +27,7 @@ const HELP = `
   Usage
     cctrack                 Build the dashboard and open it
     cctrack now             What is running right now
+    cctrack timeline        Per-day activity timeline
     cctrack watch           Live view, refreshing in place
     cctrack stats           Historical summary in the terminal
     cctrack report          Build the dashboard
@@ -269,6 +277,20 @@ async function commandReport(options: Options): Promise<number> {
   return 0;
 }
 
+async function commandTimeline(options: Options): Promise<number> {
+  const { stats } = await gather(options);
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(stats.timeline, null, 2)}\n`);
+    return 0;
+  }
+
+  // Leave room for the date column, the totals, and a little breathing space.
+  const width = process.stdout.columns ?? 100;
+  process.stdout.write(renderTimeline(stats, Math.max(24, width - 36)));
+  return 0;
+}
+
 async function commandStats(options: Options): Promise<number> {
   const started = Date.now();
   const { scan, stats } = await gather(options);
@@ -327,6 +349,8 @@ export async function run(argv: string[]): Promise<number> {
       return commandStats(options);
     case 'report':
       return commandReport(options);
+    case 'timeline':
+      return commandTimeline(options);
     case 'watch':
       return commandWatch(options);
     default:
