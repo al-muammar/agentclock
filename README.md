@@ -46,7 +46,10 @@ cctrack report --since 7d --anonymize -o week.html
 ```
 
 The dashboard has the same view with colour intensity for how many agents were
-running at once, and hover detail for exact times and projects.
+running at once — and **click any day to expand it into one lane per session**,
+so you can see which session was working when. Hovering a segment gives exact
+times. The drill-down is `<details>`, so the report still contains no
+JavaScript.
 
 ### Options
 

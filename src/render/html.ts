@@ -1,14 +1,6 @@
 import type { Anonymizer } from '../project.js';
 import { dateTime, duration, hours, shortDate, truncate } from '../format.js';
-import {
-  esc,
-  hBarChart,
-  timelineChart,
-  vBarChart,
-  type BarItem,
-  type TimelineRow,
-  type VBarItem,
-} from './svg.js';
+import { esc, hBarChart, timelineTrack, vBarChart, type BarItem, type VBarItem } from './svg.js';
 import { ACTIVE_STATUSES, type LiveSession } from '../types.js';
 import type { Stats } from '../stats.js';
 
@@ -168,10 +160,116 @@ const STYLE = `
 
   .bar-busy { fill: var(--busy); }
   .track { fill: var(--track); }
+  /* SVG marks use fill; the timeline's bars are HTML elements and need background. */
   .lv1 { fill: var(--lv1); }
   .lv2 { fill: var(--lv2); }
   .lv3 { fill: var(--lv3); }
   .lv4 { fill: var(--lv4); }
+  .b.lv1 { background-color: var(--lv1); }
+  .b.lv2 { background-color: var(--lv2); }
+  .b.lv3 { background-color: var(--lv3); }
+  .b.lv4 { background-color: var(--lv4); }
+  /* ---- activity timeline ---- */
+
+  .tl { display: flex; flex-direction: column; }
+  .tl-row {
+    display: grid;
+    grid-template-columns: 92px 1fr 62px;
+    align-items: center;
+    gap: 10px;
+  }
+  .tl-name {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--ink-2);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tl-total {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+  }
+  .tl-track {
+    position: relative;
+    display: block;
+    height: 13px;
+    border-radius: 2px;
+    background-color: var(--track);
+    /* Three-hour gridlines, drawn on the track itself rather than as elements.
+       Uses --line, not --line-soft: the latter is the same value as --track. */
+    background-image: repeating-linear-gradient(
+      to right,
+      var(--line) 0 1px,
+      transparent 1px 12.5%
+    );
+    overflow: hidden;
+  }
+  .tl-track .b {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    min-width: 1.5px;
+    border-radius: 1px;
+  }
+  .tl-ticks {
+    background: none;
+    height: 14px;
+    overflow: visible;
+  }
+  .tl-ticks span {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .tl-ticks span:first-child { transform: none; }
+
+  .tl-day { border: none; background: none; border-radius: 0; }
+  .tl-day + .tl-day { border-top: 1px solid var(--line-soft); }
+  .tl-day > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 5px 0;
+    font-family: inherit;
+    font-weight: 400;
+    font-size: inherit;
+    border-radius: 3px;
+  }
+  .tl-day > summary::-webkit-details-marker { display: none; }
+  .tl-day > summary:hover .tl-name { color: var(--busy); }
+  .tl-day[open] > summary { border-bottom: none; }
+  .tl-day[open] > summary .tl-name { color: var(--busy); font-weight: 600; }
+  .tl-day > summary:focus-visible { outline: 2px solid var(--busy); outline-offset: 2px; }
+
+  .tl-lanes {
+    padding: 6px 0 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tl-lane .tl-track { height: 9px; }
+  .tl-lane .tl-name { color: var(--muted); }
+  .tl-note {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10.5px;
+    color: var(--muted);
+    margin: 0 0 6px 102px;
+  }
+  .tl-lanes .tl-note:last-child { margin: 6px 0 0 102px; }
+
+  @media (max-width: 620px) {
+    .tl-row { grid-template-columns: 68px 1fr 52px; gap: 7px; }
+    .tl-note { margin-left: 75px; }
+  }
+
   .ramp { display: flex; align-items: center; gap: 7px; }
   .ramp .step { width: 22px; height: 10px; border-radius: 2px; }
   .ramp .step.lv1 { background: var(--lv1); }
@@ -416,42 +514,106 @@ function clockTime(t: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/** How many session lanes a single day shows before it stops listing them. */
+const MAX_LANES_PER_DAY = 14;
+/** How many days the timeline renders. */
+const MAX_TIMELINE_DAYS = 45;
+
 function timelineSection(stats: Stats, anon: Anonymizer): string {
   if (stats.timeline.length === 0) return '';
 
   // Newest day first — the recent past is what gets looked at.
-  const days = [...stats.timeline].reverse().slice(0, 45);
+  const days = [...stats.timeline].reverse().slice(0, MAX_TIMELINE_DAYS);
 
-  const rows: TimelineRow[] = days.map((day) => ({
-    label: new Date(day.midnight).toLocaleDateString(undefined, {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-    }),
-    total: duration(day.activeMs),
-    bars: day.intervals.map((interval) => {
-      const names = interval.projects.map((p) => anon.projectLabel(p));
-      const shown = names.slice(0, 3).join(', ');
-      const more = names.length > 3 ? ` +${names.length - 3} more` : '';
-      return {
-        from: Math.max(0, (interval.start - day.midnight) / DAY_MS),
-        to: Math.min(1, (interval.end - day.midnight) / DAY_MS),
-        level: interval.level,
-        title: `${clockTime(interval.start)}–${clockTime(interval.end)} · ${interval.level} agent${
-          interval.level === 1 ? '' : 's'
-        } working · ${duration(interval.end - interval.start)}${shown ? ` · ${shown}${more}` : ''}`,
-      };
-    }),
-  }));
+  const hours = [0, 3, 6, 9, 12, 15, 18, 21];
+  const axis = hours
+    .map(
+      (hour) =>
+        `<span style="left:${((hour / 24) * 100).toFixed(2)}%">${String(hour).padStart(2, '0')}</span>`,
+    )
+    .join('');
+
+  const rows = days
+    .map((day, index) => {
+      const dayLabel = new Date(day.midnight).toLocaleDateString(undefined, {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+      });
+
+      // Fractions are taken against this day's real length, which a DST
+      // transition makes 23 or 25 hours rather than 24.
+      const frac = (t: number) => (t - day.midnight) / day.dayMs;
+
+      const summaryBars = day.intervals.map((interval) => {
+        const names = interval.projects.map((p) => anon.projectLabel(p));
+        const shown = names.slice(0, 3).join(', ');
+        const more = names.length > 3 ? ` +${names.length - 3} more` : '';
+        return {
+          from: frac(interval.start),
+          to: frac(interval.end),
+          level: interval.level,
+          title: `${clockTime(interval.start)}–${clockTime(interval.end)} · ${interval.level} agent${
+            interval.level === 1 ? '' : 's'
+          } working · ${duration(interval.end - interval.start)}${shown ? ` · ${shown}` : ''}${more}`,
+        };
+      });
+
+      const lanes = day.lanes.slice(0, MAX_LANES_PER_DAY);
+      const hidden = day.lanes.length - lanes.length;
+
+      const laneRows = lanes
+        .map((lane) => {
+          const name = anon.session(lane.label, lane.sessionId);
+          const project = anon.projectLabel(lane.project);
+          const bars = lane.spans.map((span) => ({
+            from: frac(span.start),
+            to: frac(span.end),
+            // Level 2 reads clearly against the track without implying concurrency.
+            level: 2,
+            // The lane already names the session; repeating it on every bar was
+            // most of the report's weight.
+            title: `${clockTime(span.start)}–${clockTime(span.end)} · ${duration(span.end - span.start)}`,
+          }));
+          return `        <div class="tl-row tl-lane">
+          <span class="tl-name" title="${esc(project)}">${esc(truncate(name, 26))}</span>
+          ${timelineTrack(bars, `${name}, ${duration(lane.activeMs)}`)}
+          <span class="tl-total">${esc(duration(lane.activeMs))}</span>
+        </div>`;
+        })
+        .join('\n');
+
+      const note = hidden > 0 ? `<p class="tl-note">and ${hidden} shorter session${hidden === 1 ? '' : 's'}</p>` : '';
+
+      return `      <details class="tl-day"${index === 0 ? ' open' : ''}>
+        <summary>
+          <div class="tl-row">
+            <span class="tl-name">${esc(dayLabel)}</span>
+            ${timelineTrack(summaryBars, `${dayLabel}, ${duration(day.activeMs)} of agent work, peak ${day.peak}`)}
+            <span class="tl-total">${esc(duration(day.activeMs))}</span>
+          </div>
+        </summary>
+        <div class="tl-lanes">
+          <p class="tl-note">${day.lanes.length} session${day.lanes.length === 1 ? '' : 's'} worked this day · peak ${day.peak} at once</p>
+${laneRows}
+          ${note}
+        </div>
+      </details>`;
+    })
+    .join('\n');
 
   const truncated = stats.timeline.length > days.length;
 
   return `  <section>
     <h2>When agents were working</h2>
-    <p class="sub">Each row is one day, midnight to midnight, in your local time${
-      truncated ? ` · showing the most recent ${days.length} of ${stats.timeline.length} days` : ''
+    <p class="sub">Each row is one day, midnight to midnight, local time · click a day to see the individual sessions${
+      truncated ? ` · most recent ${days.length} of ${stats.timeline.length} days` : ''
     }</p>
-    <figure>${timelineChart(rows)}
+    <figure>
+      <div class="tl">
+        <div class="tl-row tl-axis"><span class="tl-name"></span><span class="tl-track tl-ticks">${axis}</span><span class="tl-total"></span></div>
+${rows}
+      </div>
       <div class="legend" style="margin-top:16px">
         <span class="key ramp">
           <span>1</span>
@@ -461,7 +623,7 @@ function timelineSection(stats: Stats, anon: Anonymizer): string {
           <span class="step lv4"></span>
           <span>4+ agents at once</span>
         </span>
-        <span class="key">hover a segment for the exact times and projects</span>
+        <span class="key">hover a segment for exact times</span>
       </div>
     </figure>
   </section>`;

@@ -46,7 +46,9 @@ intervals when a session was working.
 - **Zero runtime dependencies.** devDependencies only. This is what makes
   `npx cctrack` start in under a second; adding a dep needs a real reason.
 - **The HTML report stays self-contained.** No scripts, no network, no external
-  assets. Charts are inline SVG built from string templates.
+  assets. Charts are inline SVG built from string templates; the timeline uses
+  percentage-positioned HTML bars, and its click-to-expand day drill-down is
+  `<details>`/`<summary>`, not JavaScript. Keep it that way.
 - **Nothing leaves the machine.** No telemetry, no network calls, ever.
 
 ## Conventions

@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 const { concurrencyProfile, computeStats, buildTimeline, midnightOf, dayKey } = await import(
   '../dist/stats.js'
 );
-const { timelineChart } = await import('../dist/render/svg.js');
+const { timelineTrack, MAX_RAMP_LEVEL } = await import('../dist/render/svg.js');
+const { renderReport } = await import('../dist/render/html.js');
+const { Anonymizer } = await import('../dist/project.js');
 const { renderTimeline } = await import('../dist/render/term.js');
 
 const MIN = 60_000;
@@ -155,53 +157,158 @@ test('buildTimeline copes with no intervals at all', () => {
 
 // ---------- rendering ----------
 
-test('timelineChart positions bars by fraction of the day', () => {
-  const svg = timelineChart([
-    {
-      label: 'Sat 15 Aug',
-      total: '1h',
-      bars: [{ from: 0.5, to: 0.75, level: 1, title: 'noon to six' }],
-    },
-  ]);
-  assert.match(svg, /role="img"/);
-  assert.match(svg, /<title>noon to six<\/title>/);
-  assert.match(svg, /class="lv1"/);
+test('timelineTrack positions bars by fraction of the day', () => {
+  const html = timelineTrack([{ from: 0.5, to: 0.75, level: 1, title: 'noon to six' }], 'a day');
+  assert.match(html, /left:50\.00%/);
+  assert.match(html, /width:25\.00%/);
+  assert.match(html, /title="noon to six"/);
+  assert.match(html, /class="b lv1"/);
+  assert.match(html, /aria-label="a day"/);
 });
 
-test('timelineChart clamps the ramp at its top step', () => {
-  const svg = timelineChart([
-    {
-      label: 'day',
-      total: '1h',
-      bars: [
-        { from: 0, to: 0.1, level: 1, title: 'a' },
-        { from: 0.2, to: 0.3, level: 9, title: 'b' },
-      ],
-    },
+test('timelineTrack clamps the ramp at its top step', () => {
+  const html = timelineTrack([
+    { from: 0, to: 0.1, level: 1, title: 'a' },
+    { from: 0.2, to: 0.3, level: 99, title: 'b' },
   ]);
-  assert.match(svg, /class="lv1"/);
-  assert.match(svg, /class="lv4"/, 'level 9 uses the top ramp step');
-  assert.ok(!svg.includes('class="lv9"'));
+  assert.match(html, /class="b lv1"/);
+  assert.match(html, new RegExp(`class="b lv${MAX_RAMP_LEVEL}"`), 'high levels reuse the top step');
+  assert.ok(!html.includes('lv99'));
 });
 
-test('timelineChart keeps a brief burst visible', () => {
-  const svg = timelineChart([
-    { label: 'day', total: '2m', bars: [{ from: 0.5, to: 0.5008, level: 1, title: 'burst' }] },
-  ]);
-  const widths = [...svg.matchAll(/class="lv1"[^>]*width="([\d.]+)"/g)].map((m) => Number(m[1]));
-  assert.ok(widths[0] >= 1.5, 'a two-minute burst must not vanish on a 24h axis');
+test('timelineTrack clamps positions into the day', () => {
+  // A span clipped at a boundary can round marginally outside; it must not
+  // overhang the track.
+  const html = timelineTrack([{ from: -0.2, to: 1.4, level: 1, title: 'all day' }]);
+  assert.match(html, /left:0\.00%/);
+  assert.match(html, /width:100\.00%/);
 });
 
-test('timelineChart escapes labels and titles', () => {
-  const svg = timelineChart([
-    { label: '<b>day</b>', total: '&', bars: [{ from: 0, to: 1, level: 1, title: '<script>' }] },
-  ]);
-  assert.ok(!svg.includes('<b>day</b>'));
-  assert.ok(!svg.includes('<title><script></title>'));
+test('timelineTrack escapes titles', () => {
+  const html = timelineTrack([{ from: 0, to: 1, level: 1, title: '"><script>alert(1)</script>' }]);
+  assert.ok(!html.includes('<script>'));
+  assert.match(html, /&quot;&gt;&lt;script&gt;/);
 });
 
-test('timelineChart returns empty string with no rows', () => {
-  assert.equal(timelineChart([]), '');
+test('timelineTrack renders an empty track when there is nothing to show', () => {
+  const html = timelineTrack([]);
+  assert.match(html, /class="tl-track"/);
+  assert.ok(!html.includes('class="b '));
+});
+
+// ---------- lanes: clicking a day opens its sessions ----------
+
+const laneReport = (records, anonymize = false) =>
+  renderReport({
+    stats: computeStats(records),
+    live: [],
+    anon: new Anonymizer(anonymize),
+    windowLabel: 'Last 30d',
+    generatedAt: Date.now(),
+  });
+
+test('each day carries a lane per session that worked that day', () => {
+  const start = day(2026, 8, 12, 9);
+  const stats = computeStats([
+    session('a', '/repo/alpha', [{ start, end: start + 2 * HOUR }]),
+    session('b', '/repo/beta', [{ start: start + HOUR, end: start + 90 * MIN }]),
+  ]);
+
+  const entry = stats.timeline.find((t) => t.day === dayKey(start));
+  assert.equal(entry.lanes.length, 2);
+  // Busiest first, so opening a day leads with what dominated it.
+  assert.equal(entry.lanes[0].sessionId, 'a');
+  assert.equal(entry.lanes[0].activeMs, 2 * HOUR);
+  assert.equal(entry.lanes[1].activeMs, 30 * MIN);
+});
+
+test('a session working on two days gets a lane on each, with only that day’s time', () => {
+  const start = day(2026, 8, 15, 23, 30);
+  const end = day(2026, 8, 16, 0, 30);
+  const stats = computeStats([session('x', '/r', [{ start, end }])]);
+
+  const first = stats.timeline.find((t) => t.day === '2026-08-15');
+  const second = stats.timeline.find((t) => t.day === '2026-08-16');
+  assert.equal(first.lanes.length, 1);
+  assert.equal(second.lanes.length, 1);
+  assert.equal(first.lanes[0].activeMs, 30 * MIN);
+  assert.equal(second.lanes[0].activeMs, 30 * MIN);
+  assert.equal(first.lanes[0].sessionId, second.lanes[0].sessionId);
+});
+
+test('lane time never exceeds its day', () => {
+  const start = day(2026, 8, 12, 0);
+  const stats = computeStats([session('a', '/r', [{ start, end: start + 20 * HOUR }])]);
+  const entry = stats.timeline.find((t) => t.day === dayKey(start));
+  for (const lane of entry.lanes) {
+    assert.ok(lane.activeMs <= entry.dayMs, 'a lane cannot be longer than the day');
+    for (const span of lane.spans) {
+      assert.ok(span.start >= entry.midnight);
+      assert.ok(span.end <= entry.midnight + entry.dayMs);
+    }
+  }
+});
+
+test('dayMs is the real length of the local day', () => {
+  const start = day(2026, 8, 12, 9);
+  const stats = computeStats([session('a', '/r', [{ start, end: start + HOUR }])]);
+  const entry = stats.timeline[0];
+  // 24h normally; a DST transition makes it 23 or 25, never anything else.
+  assert.ok([23, 24, 25].includes(entry.dayMs / HOUR), `unexpected day length ${entry.dayMs}`);
+});
+
+test('the report makes each day an expandable details element', () => {
+  const start = day(2026, 8, 12, 9);
+  const html = laneReport([
+    session('alpha-session', '/repo/alpha', [{ start, end: start + HOUR }]),
+    session('beta-session', '/repo/beta', [{ start: start + 30 * MIN, end: start + 90 * MIN }]),
+  ]);
+
+  assert.match(html, /<details class="tl-day"/);
+  assert.match(html, /<summary>/);
+  assert.match(html, /click a day to see the individual sessions/);
+  // Both sessions appear as lanes inside the day.
+  assert.match(html, /alpha-session/);
+  assert.match(html, /beta-session/);
+  assert.match(html, /2 sessions worked this day/);
+});
+
+test('the most recent day is open so the drill-down is discoverable', () => {
+  const start = day(2026, 8, 12, 9);
+  const html = laneReport([session('a', '/r', [{ start, end: start + HOUR }])]);
+  assert.match(html, /<details class="tl-day" open>/);
+  assert.equal((html.match(/<details class="tl-day" open>/g) ?? []).length, 1);
+});
+
+test('lane names respect --anonymize', () => {
+  const start = day(2026, 8, 12, 9);
+  const records = [session('acme-work', '/Users/me/clients/acme', [{ start, end: start + HOUR }])];
+  assert.ok(laneReport(records).includes('acme-work'));
+
+  const hidden = laneReport(records, true);
+  assert.ok(!hidden.includes('acme-work'), 'session label must not survive anonymisation');
+  assert.ok(!hidden.includes('acme'));
+});
+
+test('the timeline markup is balanced', () => {
+  const start = day(2026, 8, 12, 9);
+  const html = laneReport([
+    session('a', '/r/a', [{ start, end: start + HOUR }]),
+    session('b', '/r/b', [{ start: start + 10 * MIN, end: start + 40 * MIN }]),
+  ]);
+  for (const tag of ['details', 'summary', 'i', 'span', 'div', 'p']) {
+    const open = (html.match(new RegExp(`<${tag}[\\s>]`, 'g')) ?? []).length;
+    const close = (html.match(new RegExp(`</${tag}>`, 'g')) ?? []).length;
+    assert.equal(open, close, `unbalanced <${tag}>`);
+  }
+});
+
+test('the timeline stays script-free', () => {
+  const start = day(2026, 8, 12, 9);
+  const html = laneReport([session('a', '/r', [{ start, end: start + HOUR }])]);
+  // The drill-down uses <details>, not JavaScript.
+  assert.ok(!/<script/i.test(html));
+  assert.ok(!/onclick/i.test(html));
 });
 
 test('the terminal timeline marks active cells and leaves the rest blank', () => {

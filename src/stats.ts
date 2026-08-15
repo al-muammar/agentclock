@@ -44,14 +44,30 @@ export interface ProjectBucket {
 }
 
 /** One day's worth of activity, positioned within the day. */
+/** One session's working time within a single day — a lane in the expanded view. */
+export interface TimelineLane {
+  sessionId: string;
+  label: string;
+  project: string;
+  activeMs: number;
+  spans: Span[];
+}
+
 export interface TimelineDay {
   day: string;
   /** Local midnight that starts this day. */
   midnight: number;
+  /**
+   * Length of this local day. Not always 24h — a DST transition makes it 23 or
+   * 25, and positioning against a fixed 24h would skew that day's bars.
+   */
+  dayMs: number;
   activeMs: number;
   peak: number;
-  /** Intervals clipped to this day, so each is within [midnight, midnight+24h). */
+  /** Union intervals clipped to this day, carrying how many were working. */
   intervals: Interval[];
+  /** Per-session detail, busiest first. */
+  lanes: TimelineLane[];
 }
 
 export interface Stats {
@@ -70,7 +86,11 @@ export function midnightOf(day: string): number {
 }
 
 /** Split intervals across local day boundaries and group them by day. */
-export function buildTimeline(intervals: Interval[], days: DayBucket[]): TimelineDay[] {
+export function buildTimeline(
+  intervals: Interval[],
+  days: DayBucket[],
+  sessions: SessionRecord[] = [],
+): TimelineDay[] {
   const byDay = new Map<string, Interval[]>();
 
   for (const interval of intervals) {
@@ -93,15 +113,57 @@ export function buildTimeline(intervals: Interval[], days: DayBucket[]): Timelin
     }
   }
 
+  // Per-session lanes, so a day can be opened to see who was doing what.
+  const lanesByDay = new Map<string, TimelineLane[]>();
+  for (const session of sessions) {
+    const spansByDay = new Map<string, Span[]>();
+    for (const span of session.spans) {
+      let cursor = span.start;
+      while (cursor < span.end) {
+        const boundary = Math.min(nextLocalDay(cursor), span.end);
+        const key = dayKey(cursor);
+        let list = spansByDay.get(key);
+        if (!list) {
+          list = [];
+          spansByDay.set(key, list);
+        }
+        list.push({ start: cursor, end: boundary });
+        cursor = boundary;
+      }
+    }
+    for (const [key, spans] of spansByDay) {
+      let lanes = lanesByDay.get(key);
+      if (!lanes) {
+        lanes = [];
+        lanesByDay.set(key, lanes);
+      }
+      lanes.push({
+        sessionId: session.sessionId,
+        label: session.label,
+        project: session.project,
+        activeMs: totalMs(spans),
+        spans,
+      });
+    }
+  }
+  for (const lanes of lanesByDay.values()) {
+    lanes.sort((a, b) => b.activeMs - a.activeMs);
+  }
+
   return days
     .filter((d) => byDay.has(d.day) || d.activeMs > 0)
-    .map((d) => ({
-      day: d.day,
-      midnight: midnightOf(d.day),
-      activeMs: d.activeMs,
-      peak: d.peak,
-      intervals: byDay.get(d.day) ?? [],
-    }));
+    .map((d) => {
+      const midnight = midnightOf(d.day);
+      return {
+        day: d.day,
+        midnight,
+        dayMs: nextLocalDay(midnight) - midnight,
+        activeMs: d.activeMs,
+        peak: d.peak,
+        intervals: byDay.get(d.day) ?? [],
+        lanes: lanesByDay.get(d.day) ?? [],
+      };
+    });
 }
 
 function nextLocalDay(t: number): number {
@@ -359,6 +421,6 @@ export function computeStats(
     days,
     projects,
     sessions,
-    timeline: buildTimeline(intervals, days),
+    timeline: buildTimeline(intervals, days, sessions),
   };
 }
