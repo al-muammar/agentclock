@@ -6,9 +6,10 @@ import { Anonymizer } from './project.js';
 import { computeStats } from './stats.js';
 import { duration, parseWindow } from './format.js';
 import { defaultReportPath } from './paths.js';
+import { loadArchive, mergeArchive, saveArchive, emptyArchive } from './archive.js';
 import { readLiveSessions } from './registry.js';
 import { renderReport } from './render/html.js';
-import { renderNow, renderStats } from './render/term.js';
+import { CLEAR_SCREEN, HIDE_CURSOR, SHOW_CURSOR, renderNow, renderStats } from './render/term.js';
 import { scanTranscripts } from './transcripts.js';
 
 export const VERSION = '0.1.0';
@@ -19,6 +20,7 @@ const HELP = `
   Usage
     cctrack                 Build the dashboard and open it
     cctrack now             What is running right now
+    cctrack watch           Live view, refreshing in place
     cctrack stats           Historical summary in the terminal
     cctrack report          Build the dashboard
     cctrack --help
@@ -29,13 +31,16 @@ const HELP = `
     --anonymize             Replace project and session names with stable pseudonyms
     -o, --out <file>        Where to write the dashboard
     --no-open               Write the dashboard without opening it
+    --interval <seconds>    Refresh rate for watch  (default 2)
+    --no-archive            Do not read or update ~/.cctrack/archive.jsonl
     --json                  Machine-readable output
     --verbose               Report parse throughput
     --version
 
   Notes
     Subagents are part of their parent session and are never counted separately.
-    Historical data comes from transcripts, which Claude Code deletes after 30 days.
+    Claude Code deletes transcripts after 30 days; cctrack keeps what it has
+    already seen in ~/.cctrack/archive.jsonl, so history outlives the sweep.
 `;
 
 interface Options {
@@ -47,6 +52,8 @@ interface Options {
   verbose: boolean;
   out: string | null;
   open: boolean;
+  archive: boolean;
+  interval: number;
 }
 
 export function parseArgs(argv: string[]): { options: Options; error?: string } {
@@ -59,6 +66,8 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
     verbose: false,
     out: null,
     open: true,
+    archive: true,
+    interval: 2,
   };
 
   const rest: string[] = [];
@@ -81,6 +90,17 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
       case '--no-open':
         options.open = false;
         break;
+      case '--no-archive':
+        options.archive = false;
+        break;
+      case '--interval': {
+        const value = Number(argv[++i]);
+        if (!Number.isFinite(value) || value <= 0) {
+          return { options, error: '--interval needs a number of seconds' };
+        }
+        options.interval = value;
+        break;
+      }
       case '-o':
       case '--out': {
         const value = argv[++i];
@@ -135,7 +155,15 @@ async function gather(options: Options) {
   const isTty = process.stderr.isTTY === true;
   const quiet = options.json || !isTty;
 
+  // The archive both preserves sessions Claude Code has already swept and lets an
+  // unchanged transcript be skipped entirely on a later run.
+  const archive = options.archive ? await loadArchive() : emptyArchive();
+
   const scan = await scanTranscripts({
+    skip: (tf) => {
+      const known = archive.byFile.get(tf.file);
+      return known !== undefined && known.mtimeMs === tf.mtimeMs && known.size === tf.size;
+    },
     onProgress: (done, total) => {
       if (quiet || total < 40) return;
       if (done % 25 !== 0 && done !== total) return;
@@ -144,11 +172,58 @@ async function gather(options: Options) {
   });
   if (!quiet) process.stderr.write(`\r${' '.repeat(40)}\r`);
 
+  const records = mergeArchive(archive, scan.records);
+
+  if (options.archive) {
+    // Never let a write failure cost the user their report.
+    try {
+      await saveArchive(records);
+    } catch (err) {
+      if (options.verbose) {
+        process.stderr.write(
+          `  could not update archive: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }
+  }
+
   const window = options.all
     ? undefined
     : { from: Date.now() - (options.since ?? 30 * 86_400_000), to: Date.now() };
 
-  return { scan, stats: computeStats(scan.records, window) };
+  return { scan, records, stats: computeStats(records, window) };
+}
+
+/** Live view that redraws in place. Terminal-only replacement for a menu bar. */
+async function commandWatch(options: Options): Promise<number> {
+  const anon = new Anonymizer(options.anonymize);
+  const interval = Math.max(1, options.interval) * 1000;
+  let stop = false;
+
+  const restore = () => {
+    process.stdout.write(SHOW_CURSOR);
+  };
+  const onSignal = () => {
+    stop = true;
+    restore();
+    process.stdout.write('\n');
+    process.exit(0);
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+  process.stdout.write(HIDE_CURSOR);
+
+  try {
+    while (!stop) {
+      const sessions = await readLiveSessions();
+      const hint = `  ${SHOW_CURSOR}refreshing every ${options.interval}s · ctrl-c to stop\n`;
+      process.stdout.write(CLEAR_SCREEN + renderNow(sessions, anon) + hint + HIDE_CURSOR);
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    }
+  } finally {
+    restore();
+  }
+  return 0;
 }
 
 function windowLabel(options: Options): string {
@@ -252,6 +327,8 @@ export async function run(argv: string[]): Promise<number> {
       return commandStats(options);
     case 'report':
       return commandReport(options);
+    case 'watch':
+      return commandWatch(options);
     default:
       process.stderr.write(
         `  Unknown command: ${options.command}\n\n  Run cctrack --help for usage.\n\n`,

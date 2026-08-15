@@ -8,7 +8,11 @@ const useColor =
   process.env['TERM'] !== 'dumb' &&
   process.stdout.isTTY !== false;
 
-const ESC = String.fromCharCode(27);
+export const ESC = String.fromCharCode(27);
+/** Home the cursor and clear everything below — a flicker-free redraw for watch. */
+export const CLEAR_SCREEN = `${ESC}[H${ESC}[J`;
+export const HIDE_CURSOR = `${ESC}[?25l`;
+export const SHOW_CURSOR = `${ESC}[?25h`;
 const code = (n: string) => (s: string) => (useColor ? `${ESC}[${n}m${s}${ESC}[0m` : s);
 
 export const c = {
