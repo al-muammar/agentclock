@@ -1,5 +1,13 @@
 import { attribute, type Anonymizer } from '../project.js';
-import { duration, pad, padStart, truncate } from '../format.js';
+import {
+  FULL_DAY,
+  clockFromFraction,
+  duration,
+  pad,
+  padStart,
+  truncate,
+  type HourRange,
+} from '../format.js';
 import { ACTIVE_STATUSES, type LiveSession } from '../types.js';
 import type { Stats } from '../stats.js';
 
@@ -101,6 +109,129 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
     if (s.status === 'waiting' && s.waitingFor) {
       lines.push(`  ${' '.repeat(nameWidth)}  ${c.dim(`↳ ${s.waitingFor}`)}`);
     }
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
+/**
+ * Per-day activity timeline for the terminal.
+ *
+ * Each row is one day split into equal-width cells; the block character encodes
+ * how much of that cell had an agent working, so a burst is visible even when a
+ * cell covers 30 minutes. Ramp characters carry the magnitude, colour only
+ * reinforces it — this stays readable piped to a file or on a mono terminal.
+ */
+export function renderTimeline(
+  stats: Stats,
+  columns = 72,
+  window: HourRange | null = null,
+): string {
+  if (stats.timeline.length === 0) {
+    return `${c.dim('No agent activity in the selected window.')}\n`;
+  }
+
+  const view = window ?? FULL_DAY;
+  const cells = Math.max(24, Math.min(columns, 144));
+  const ramp = [' ', '▁', '▃', '▅', '▇', '█'];
+
+  const lines: string[] = [''];
+  lines.push(
+    c.dim(
+      `  Each row is one day · ${cells} cells · ${clockFromFraction(view.from)} to ${clockFromFraction(view.to)} (local)`,
+    ),
+  );
+  lines.push('');
+
+  // Hour ruler, aligned to the cell grid and to whatever window is in view.
+  const spanHours = (view.to - view.from) * 24;
+  const tickHours = spanHours > 12 ? 3 : spanHours > 4 ? 1 : spanHours > 1 ? 0.5 : 0.25;
+  let ruler = '';
+  for (
+    let h = Math.ceil((view.from * 24) / tickHours) * tickHours;
+    h <= view.to * 24;
+    h += tickHours
+  ) {
+    const target = Math.round(((h / 24 - view.from) / (view.to - view.from)) * cells);
+    if (ruler.length > target) continue;
+    const label = Number.isInteger(h)
+      ? String(h).padStart(2, '0')
+      : clockFromFraction(h / 24).slice(0, 5);
+    ruler += ' '.repeat(target - ruler.length) + label;
+  }
+  lines.push(`  ${' '.repeat(11)}${c.dim(ruler)}`);
+
+  for (const day of [...stats.timeline].reverse()) {
+    // The visible window in milliseconds from this day's midnight. Uses the day's
+    // real length, which a DST transition makes 23 or 25 hours.
+    const viewStart = view.from * day.dayMs;
+    const viewEnd = view.to * day.dayMs;
+    const cellMs = (viewEnd - viewStart) / cells;
+
+    // Fraction of each cell that had at least one agent working, plus that cell's
+    // peak level, so the row shows both when and how heavily.
+    const filled = new Array<number>(cells).fill(0);
+    const peak = new Array<number>(cells).fill(0);
+
+    for (const interval of day.intervals) {
+      const from = Math.max(viewStart, interval.start - day.midnight) - viewStart;
+      const to = Math.min(viewEnd, interval.end - day.midnight) - viewStart;
+      if (to <= from) continue;
+      const firstCell = Math.floor(from / cellMs);
+      const lastCell = Math.min(cells - 1, Math.floor((to - 1) / cellMs));
+      for (let i = firstCell; i <= lastCell; i++) {
+        const cellStart = i * cellMs;
+        const overlap = Math.min(to, cellStart + cellMs) - Math.max(from, cellStart);
+        if (overlap <= 0) continue;
+        filled[i] = Math.min(1, (filled[i] ?? 0) + overlap / cellMs);
+        peak[i] = Math.max(peak[i] ?? 0, interval.level);
+      }
+    }
+
+    let row = '';
+    for (let i = 0; i < cells; i++) {
+      const fraction = filled[i] ?? 0;
+      if (fraction <= 0) {
+        row += c.idle('·');
+        continue;
+      }
+      const index = Math.max(1, Math.min(ramp.length - 1, Math.ceil(fraction * (ramp.length - 1))));
+      row += c.busy(ramp[index] ?? '█');
+    }
+
+    const date = new Date(day.midnight).toLocaleDateString(undefined, {
+      weekday: 'short',
+      day: '2-digit',
+      month: 'short',
+    });
+
+    // With a window in view, the total has to be the visible total. Printing the
+    // whole day's figure beside a three-hour slice reads as a contradiction.
+    let visibleMs = day.activeMs;
+    let visiblePeak = day.peak;
+    if (view !== FULL_DAY) {
+      visibleMs = 0;
+      for (const lane of day.lanes) {
+        for (const span of lane.spans) {
+          const overlap =
+            Math.min(span.end - day.midnight, viewEnd) -
+            Math.max(span.start - day.midnight, viewStart);
+          if (overlap > 0) visibleMs += overlap;
+        }
+      }
+      visiblePeak = 0;
+      for (const interval of day.intervals) {
+        const overlap =
+          Math.min(interval.end - day.midnight, viewEnd) -
+          Math.max(interval.start - day.midnight, viewStart);
+        if (overlap > 0 && interval.level > visiblePeak) visiblePeak = interval.level;
+      }
+    }
+
+    lines.push(
+      `  ${pad(date, 11)}${row} ${c.dim(padStart(duration(visibleMs), 8))} ${c.dim(`peak ${visiblePeak}`)}`,
+    );
   }
 
   lines.push('');

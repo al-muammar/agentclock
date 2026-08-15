@@ -45,6 +45,48 @@ export function padStart(value: string, width: number): string {
   return value.length >= width ? value : ' '.repeat(width - value.length) + value;
 }
 
+/** A slice of the day, as fractions from midnight. 0 = 00:00, 1 = 24:00. */
+export interface HourRange {
+  from: number;
+  to: number;
+}
+
+export const FULL_DAY: HourRange = { from: 0, to: 1 };
+
+function parseClock(value: string): number | null {
+  const m = /^(\d{1,2})(?::(\d{2}))?$/.exec(value.trim());
+  if (!m?.[1]) return null;
+  const hour = Number(m[1]);
+  const minute = m[2] ? Number(m[2]) : 0;
+  if (!Number.isInteger(hour) || hour < 0 || hour > 24) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  const total = hour * 60 + minute;
+  if (total > 24 * 60) return null;
+  return total / (24 * 60);
+}
+
+/**
+ * Parse an hour window like "9-18", "09:30-13:00" or "22-24".
+ * Returns fractions of a day, or null if it isn't a usable range.
+ */
+export function parseHourRange(value: string): HourRange | null {
+  const parts = value.split('-');
+  if (parts.length !== 2) return null;
+  const from = parseClock(parts[0]!);
+  const to = parseClock(parts[1]!);
+  if (from === null || to === null) return null;
+  if (to <= from) return null;
+  return { from, to };
+}
+
+/** Format a day fraction back as a clock time, for axis labels. */
+export function clockFromFraction(fraction: number): string {
+  const minutes = Math.round(fraction * 24 * 60);
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 /**
  * Parse a duration argument like "7d", "24h", "90m".
  * Returns milliseconds, or null when the input isn't a duration.

@@ -89,6 +89,43 @@ ${axisMarkup}
   </svg>`;
 }
 
+export interface TimelineBar {
+  /** Position as a fraction of the day: 0 = midnight, 1 = the next midnight. */
+  from: number;
+  to: number;
+  /** How many sessions were working. 0 means "just this one" for a lane. */
+  level: number;
+  title: string;
+}
+
+/** Highest level with its own ramp step; anything above reuses the top step. */
+export const MAX_RAMP_LEVEL = 4;
+
+/**
+ * One row of a timeline, as positioned HTML rather than SVG.
+ *
+ * HTML because the rows have to live inside <details> elements so a day can be
+ * opened, and because percentage-positioned divs are far less markup than the
+ * equivalent SVG — a 45-day report with per-session lanes is thousands of bars.
+ */
+export function timelineTrack(bars: TimelineBar[], label?: string): string {
+  const segments = bars
+    .map((bar) => {
+      const from = Math.max(0, Math.min(1, bar.from));
+      const to = Math.max(from, Math.min(1, bar.to));
+      // Width can round to zero at this scale; CSS min-width keeps a short burst
+      // visible, so a two-minute turn does not disappear on a 24-hour axis.
+      const width = (to - from) * 100;
+      const step = Math.min(Math.max(1, bar.level), MAX_RAMP_LEVEL);
+      return `<i class="b lv${step}" style="left:${(from * 100).toFixed(2)}%;width:${width.toFixed(2)}%" title="${esc(bar.title)}"></i>`;
+    })
+    .join('');
+
+  const aria = label ? ` role="img" aria-label="${esc(label)}"` : '';
+  // Bars sit on their own layer so zoom is a single transform per track.
+  return `<span class="tl-track"${aria}><span class="tl-bars">${segments}</span></span>`;
+}
+
 export interface VBarItem {
   label: string;
   /** Shown only on some columns, to keep the axis readable. */
