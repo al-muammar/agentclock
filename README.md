@@ -28,9 +28,11 @@ being a rule the tool applies.
 ## Usage
 
 ```sh
+cctrack                # build the dashboard and open it
 cctrack now            # what's running right now
-cctrack stats          # historical summary (last 30 days)
-cctrack stats --all    # everything still on disk
+cctrack watch          # live view, refreshing in place
+cctrack stats          # historical summary in the terminal
+cctrack report --since 7d --anonymize -o week.html
 ```
 
 ### Options
@@ -40,8 +42,16 @@ cctrack stats --all    # everything still on disk
 | `--since <window>` | Time window: `7d`, `24h`, `90m`. Default `30d`. |
 | `--all` | No window — everything on disk. |
 | `--anonymize` | Replace project and session names with stable pseudonyms. |
+| `-o, --out <file>` | Where to write the dashboard. |
+| `--no-open` | Write the dashboard without opening it. |
+| `--interval <seconds>` | Refresh rate for `watch`. Default `2`. |
+| `--no-archive` | Don't read or update `~/.cctrack/archive.jsonl`. |
 | `--json` | Machine-readable output. |
 | `--verbose` | Report parse throughput. |
+
+Sharing a report? `--anonymize` replaces repository paths and session names with
+stable pseudonyms — the same project always gets the same label, so the report is
+still readable, just not about anyone in particular.
 
 ## How it works
 
@@ -59,13 +69,28 @@ turn that ended at 14:08:47 after six minutes becomes a span of 14:02:47–14:08
 Reading 700 MB of transcripts takes about 2.5 seconds, because a substring check
 before `JSON.parse` means ~99% of lines are never parsed.
 
+### History outlives Claude's cleanup
+
+Claude Code deletes transcripts after `cleanupPeriodDays` (default 30). Each run
+records what it parsed to `~/.cctrack/archive.jsonl`, so sessions stay counted after
+their transcripts are gone — and unchanged transcripts are skipped next time.
+
+```
+first run   532 files · 2834 ms
+later run     0 files ·   54 ms
+```
+
+A few hundred KB for a year of sessions. Disable with `--no-archive`.
+
 ### Two honest limits
 
 - **Historical `waiting` isn't recoverable.** Nothing in a transcript distinguishes
   "blocked on a permission prompt" from "went to lunch". `waiting` appears in
-  `cctrack now`, but historical charts show busy and idle only.
+  `cctrack now` and `cctrack watch`, but historical charts show busy and idle only.
 - **Sessions older than Claude Code 2.1.222 record no turn durations.** They're
-  counted, but contribute no active time rather than a fabricated estimate.
+  counted, but contribute no active time rather than a fabricated estimate. (An
+  earlier draft estimated it from gaps between records; measured against ground
+  truth that ran 44% low, so it was cut.)
 
 ## Requirements
 
