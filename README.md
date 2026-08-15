@@ -46,10 +46,20 @@ cctrack report --since 7d --anonymize -o week.html
 ```
 
 The dashboard has the same view with colour intensity for how many agents were
-running at once — and **click any day to expand it into one lane per session**,
-so you can see which session was working when. Hovering a segment gives exact
-times. The drill-down is `<details>`, so the report still contains no
-JavaScript.
+running at once, plus:
+
+- **Click any day** to expand it into one lane per session, and a row of
+  parallel-agent counts for each hour.
+- **Drag across any row** to zoom into that interval, or use the presets.
+  Double-click or press Esc to reset. `--hours 9-18` sets it from the CLI and
+  works in the terminal view too.
+- **Hourly distribution** with a day selector: pick all days or one day, and
+  switch between sessions active, agents at once, and time worked. An hour
+  counts a session if it was working at any point inside it, however briefly.
+
+Zoom and the selector are the only things that use script; it is inline, and the
+report still makes no network requests. With scripting off the full-day timeline
+renders and days still expand.
 
 ### Options
 
@@ -60,6 +70,7 @@ JavaScript.
 | `--anonymize` | Replace project and session names with stable pseudonyms. |
 | `-o, --out <file>` | Where to write the dashboard. |
 | `--no-open` | Write the dashboard without opening it. |
+| `--hours <range>` | Zoom the timeline to a slice of the day: `9-18`, `09:30-13:00`. |
 | `--interval <seconds>` | Refresh rate for `watch`. Default `2`. |
 | `--no-archive` | Don't read or update `~/.cctrack/archive.jsonl`. |
 | `--json` | Machine-readable output. |

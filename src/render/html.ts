@@ -1,5 +1,5 @@
 import type { Anonymizer } from '../project.js';
-import { dateTime, duration, hours, shortDate, truncate } from '../format.js';
+import { dateTime, duration, hours, shortDate, truncate, type HourRange } from '../format.js';
 import { esc, hBarChart, timelineTrack, vBarChart, type BarItem, type VBarItem } from './svg.js';
 import { ACTIVE_STATUSES, type LiveSession } from '../types.js';
 import type { Stats } from '../stats.js';
@@ -202,13 +202,25 @@ const STYLE = `
     border-radius: 2px;
     background-color: var(--track);
     /* Three-hour gridlines, drawn on the track itself rather than as elements.
-       Uses --line, not --line-soft: the latter is the same value as --track. */
+       Uses --line, not --line-soft: the latter is the same value as --track.
+       Replaced by positioned rules once zoomed, where the spacing changes. */
     background-image: repeating-linear-gradient(
       to right,
       var(--line) 0 1px,
       transparent 1px 12.5%
     );
     overflow: hidden;
+    touch-action: pan-y;
+  }
+  .tl.zoomed .tl-track { background-image: none; }
+
+  /* Bars live on their own layer so zooming is one transform per track rather
+     than repositioning every bar. */
+  .tl-bars {
+    position: absolute;
+    inset: 0;
+    transform-origin: 0 50%;
+    transform: scaleX(var(--zs, 1)) translateX(calc(var(--zf, 0) * -100%));
   }
   .tl-track .b {
     position: absolute;
@@ -216,6 +228,171 @@ const STYLE = `
     bottom: 0;
     min-width: 1.5px;
     border-radius: 1px;
+  }
+  /* Gridlines and the drag preview sit outside the scaled layer so they keep
+     their real thickness at any zoom level. */
+  .tl-rule {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--line);
+    pointer-events: none;
+  }
+  .tl-sel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: color-mix(in srgb, var(--busy) 22%, transparent);
+    border-left: 1px solid var(--busy);
+    border-right: 1px solid var(--busy);
+    pointer-events: none;
+  }
+
+  .tl-zoom {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 14px 102px;
+  }
+  .tl-zoom button {
+    font: inherit;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    color: var(--ink-2);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 3px 11px;
+    cursor: pointer;
+  }
+  .tl-zoom button:hover { border-color: var(--busy); color: var(--busy); }
+  .tl-zoom button[aria-pressed="true"] {
+    border-color: var(--busy);
+    color: var(--busy);
+    font-weight: 600;
+  }
+  .tl-zoom button:focus-visible { outline: 2px solid var(--busy); outline-offset: 2px; }
+  .tl-zoom .tl-range {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    color: var(--muted);
+    margin-left: 4px;
+  }
+  /* ---- hourly distribution ---- */
+
+  .hz-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin-bottom: 18px;
+  }
+  .hz-controls label {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .hz-controls select {
+    font: inherit;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 4px 8px;
+  }
+  .hz-controls select:focus-visible { outline: 2px solid var(--busy); outline-offset: 1px; }
+
+  .hz-chart {
+    display: grid;
+    grid-template-columns: repeat(24, 1fr);
+    gap: 3px;
+    align-items: end;
+    height: 150px;
+  }
+  .hz-col {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    height: 100%;
+    position: relative;
+  }
+  .hz-bar {
+    background: var(--busy);
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+    width: 100%;
+  }
+  .hz-bar.zero { background: var(--track); min-height: 2px; }
+  .hz-val {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 9.5px;
+    color: var(--ink-2);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 3px;
+  }
+  .hz-axis {
+    display: grid;
+    grid-template-columns: repeat(24, 1fr);
+    gap: 3px;
+    margin-top: 6px;
+  }
+  .hz-axis span {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 9.5px;
+    color: var(--muted);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .hz-empty {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+
+  /* Per-hour parallel counts inside an opened day. Positioned rather than a grid,
+     so the cells stay aligned to the axis when the timeline is zoomed. */
+  .tl-hours {
+    position: relative;
+    display: block;
+    height: 15px;
+    margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .tl-hours i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 9.5px;
+    font-style: normal;
+    line-height: 15px;
+    text-align: center;
+    border-radius: 2px;
+    color: var(--ink-2);
+    background: var(--track);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    box-shadow: inset -1px 0 0 var(--surface);
+  }
+  .tl-hours i.z { color: var(--muted); opacity: .45; }
+  .tl-hours i.lv1 { background: var(--lv1); }
+  .tl-hours i.lv2 { background: var(--lv2); }
+  .tl-hours i.lv3 { background: var(--lv3); color: #fff; }
+  .tl-hours i.lv4 { background: var(--lv4); color: #fff; }
+
+  .tl-hint {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10.5px;
+    color: var(--muted);
+    margin: 10px 0 0 102px;
   }
   .tl-ticks {
     background: none;
@@ -377,12 +554,249 @@ const STYLE = `
   footer a { color: var(--busy); }
 `;
 
+/**
+ * Timeline zoom.
+ *
+ * Everything else in this report is static markup, and the day drill-down is
+ * plain <details>. Zooming to an arbitrary interval is the one thing that cannot
+ * be expressed that way, so it gets script — inline, no network, and entirely
+ * optional: with scripting off the timeline still renders the full day and every
+ * other feature works.
+ *
+ * Bars are positioned as a fraction of the day, so zooming is one transform per
+ * track rather than repositioning thousands of elements.
+ */
+const SCRIPT = `
+(function () {
+  var tl = document.querySelector('[data-tl]');
+  if (!tl) return;
+
+  var readout = document.querySelector('[data-tl-range]');
+  var buttons = Array.prototype.slice.call(document.querySelectorAll('.tl-zoom button'));
+  var from = parseFloat(tl.getAttribute('data-from') || '0');
+  var to = parseFloat(tl.getAttribute('data-to') || '1');
+
+  function clock(f) {
+    var mins = Math.round(f * 1440);
+    if (mins >= 1440) return '24:00';
+    var h = Math.floor(mins / 60), m = mins % 60;
+    return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+  }
+
+  // Gridline spacing that stays legible however far in we are.
+  function stepMinutes(span) {
+    var candidates = [180, 60, 30, 15, 5, 1];
+    for (var i = 0; i < candidates.length; i++) {
+      if (span * 1440 / candidates[i] <= 12) return candidates[i];
+    }
+    return 1;
+  }
+
+  function apply() {
+    var span = to - from;
+    var scale = 1 / span;
+    tl.style.setProperty('--zf', from);
+    tl.style.setProperty('--zs', scale);
+    tl.classList.toggle('zoomed', span < 0.999);
+
+    // Axis labels and per-track rules, drawn unscaled so they keep their weight.
+    var step = stepMinutes(span);
+    var marks = [];
+    var first = Math.ceil(from * 1440 / step) * step;
+    for (var m = first; m <= to * 1440 + 0.001; m += step) {
+      marks.push({ at: (m / 1440 - from) / span, label: clock(m / 1440) });
+    }
+
+    var ticks = tl.querySelector('.tl-ticks');
+    if (ticks) {
+      ticks.innerHTML = marks.map(function (mark) {
+        return '<span style="left:' + (mark.at * 100).toFixed(3) + '%">' + mark.label + '</span>';
+      }).join('');
+    }
+
+    var tracks = tl.querySelectorAll('.tl-day .tl-track');
+    for (var i = 0; i < tracks.length; i++) {
+      var old = tracks[i].querySelectorAll('.tl-rule');
+      for (var j = 0; j < old.length; j++) old[j].remove();
+      if (span >= 0.999) continue;
+      for (var k = 0; k < marks.length; k++) {
+        var rule = document.createElement('i');
+        rule.className = 'tl-rule';
+        rule.style.left = (marks[k].at * 100).toFixed(3) + '%';
+        tracks[i].appendChild(rule);
+      }
+    }
+
+    // The agents-per-hour cells are hour-quantised, so they are repositioned
+    // rather than transformed — stretched digits would be unreadable.
+    var cells = tl.querySelectorAll('.tl-hours i');
+    for (var c = 0; c < cells.length; c++) {
+      var h = parseInt(cells[c].getAttribute('data-h'), 10);
+      var cellFrom = h / 24, cellTo = (h + 1) / 24;
+      if (cellTo <= from || cellFrom >= to) {
+        cells[c].style.display = 'none';
+        continue;
+      }
+      cells[c].style.display = '';
+      var l = Math.max(0, (cellFrom - from) / span);
+      var r = Math.min(1, (cellTo - from) / span);
+      cells[c].style.left = (l * 100).toFixed(3) + '%';
+      cells[c].style.width = ((r - l) * 100).toFixed(3) + '%';
+    }
+
+    if (readout) {
+      readout.textContent = span >= 0.999 ? 'full day' : clock(from) + ' – ' + clock(to);
+    }
+    for (var b = 0; b < buttons.length; b++) {
+      var bf = parseFloat(buttons[b].getAttribute('data-from'));
+      var bt = parseFloat(buttons[b].getAttribute('data-to'));
+      var on = Math.abs(bf - from) < 1e-6 && Math.abs(bt - to) < 1e-6;
+      buttons[b].setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+
+  function zoom(a, b) {
+    // A selection under a minute is almost always a mis-drag, not an intent.
+    if (b - a < 1 / 1440) return;
+    from = Math.max(0, a);
+    to = Math.min(1, b);
+    apply();
+  }
+
+  for (var b = 0; b < buttons.length; b++) {
+    buttons[b].addEventListener('click', function (event) {
+      zoom(parseFloat(event.currentTarget.getAttribute('data-from')),
+           parseFloat(event.currentTarget.getAttribute('data-to')));
+    });
+  }
+
+  // Drag across any track to zoom into that interval.
+  var dragging = null;
+  var preview = null;
+
+  function fraction(track, clientX) {
+    var box = track.getBoundingClientRect();
+    if (box.width <= 0) return 0;
+    var x = Math.min(Math.max(clientX - box.left, 0), box.width) / box.width;
+    return from + x * (to - from);
+  }
+
+  tl.addEventListener('pointerdown', function (event) {
+    var track = event.target.closest ? event.target.closest('.tl-track') : null;
+    if (!track || track.classList.contains('tl-ticks')) return;
+    // Let a plain click still toggle the day open.
+    dragging = { track: track, start: fraction(track, event.clientX), moved: false };
+  });
+
+  tl.addEventListener('pointermove', function (event) {
+    if (!dragging) return;
+    var current = fraction(dragging.track, event.clientX);
+    if (Math.abs(current - dragging.start) < 1e-4) return;
+    dragging.moved = true;
+    if (!preview) {
+      preview = document.createElement('i');
+      preview.className = 'tl-sel';
+      dragging.track.appendChild(preview);
+    }
+    var span = to - from;
+    var a = (Math.min(dragging.start, current) - from) / span;
+    var b = (Math.max(dragging.start, current) - from) / span;
+    preview.style.left = (a * 100).toFixed(3) + '%';
+    preview.style.width = ((b - a) * 100).toFixed(3) + '%';
+  });
+
+  function endDrag(event) {
+    if (!dragging) return;
+    var moved = dragging.moved;
+    var start = dragging.start;
+    var track = dragging.track;
+    dragging = null;
+    if (preview) { preview.remove(); preview = null; }
+    if (!moved) return;
+    // A real drag zooms; suppress the click so the day does not also toggle.
+    event.preventDefault();
+    var end = fraction(track, event.clientX);
+    zoom(Math.min(start, end), Math.max(start, end));
+  }
+
+  tl.addEventListener('pointerup', endDrag);
+  tl.addEventListener('pointercancel', function () {
+    dragging = null;
+    if (preview) { preview.remove(); preview = null; }
+  });
+
+  tl.addEventListener('dblclick', function () { from = 0; to = 1; apply(); });
+
+  // ---- hourly distribution ----
+  var hz = document.querySelector('[data-hz-chart]');
+  var hzData = window.__cctrackHours;
+  if (hz && hzData) {
+    var daySelect = document.querySelector('[data-hz-day]');
+    var metricButtons = Array.prototype.slice.call(document.querySelectorAll('[data-hz-metric]'));
+    var metric = 'sessions';
+    var COLUMN = { sessions: 0, peak: 1, activeMs: 2 };
+
+    function fmtHours(seconds) {
+      if (seconds <= 0) return '0';
+      if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+      var h = seconds / 3600;
+      return (h < 10 ? h.toFixed(1) : Math.round(h)) + 'h';
+    }
+
+    function drawHours() {
+      var key = daySelect ? daySelect.value : '*';
+      var rows = key === '*' ? hzData.all : hzData.days[key];
+      if (!rows) rows = hzData.all;
+
+      var column = COLUMN[metric];
+      var values = rows.map(function (row) { return row[column]; });
+      var max = Math.max.apply(null, values.concat([1]));
+
+      hz.innerHTML = values.map(function (value, hour) {
+        var pct = value > 0 ? Math.max(3, (value / max) * 100) : 0;
+        var shown = metric === 'activeMs' ? fmtHours(value) : String(value);
+        var label = String(hour).padStart(2, '0') + ':00 — ' +
+          rows[hour][0] + ' session(s) active, up to ' + rows[hour][1] +
+          ' at once, ' + fmtHours(rows[hour][2]) + ' worked';
+        return '<div class="hz-col" title="' + label + '">' +
+          (value > 0 ? '<span class="hz-val">' + shown + '</span>' : '') +
+          '<span class="hz-bar' + (value > 0 ? '' : ' zero') + '" style="height:' + pct.toFixed(1) + '%"></span>' +
+          '</div>';
+      }).join('');
+    }
+
+    if (daySelect) daySelect.addEventListener('change', drawHours);
+    for (var mb = 0; mb < metricButtons.length; mb++) {
+      metricButtons[mb].addEventListener('click', function (event) {
+        metric = event.currentTarget.getAttribute('data-hz-metric');
+        for (var k = 0; k < metricButtons.length; k++) {
+          metricButtons[k].setAttribute(
+            'aria-pressed',
+            metricButtons[k] === event.currentTarget ? 'true' : 'false',
+          );
+        }
+        drawHours();
+      });
+    }
+    drawHours();
+  }
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') { from = 0; to = 1; apply(); }
+  });
+
+  apply();
+})();
+`;
+
 export interface ReportInput {
   stats: Stats;
   live: LiveSession[];
   anon: Anonymizer;
   windowLabel: string;
   generatedAt: number;
+  /** Initial zoom window for the timeline, if the caller asked for one. */
+  zoom?: HourRange | null;
 }
 
 function tile(label: string, value: string, note: string, accent = false): string {
@@ -507,7 +921,7 @@ function dailySection(stats: Stats): string {
   </section>`;
 }
 
-const DAY_MS = 86_400_000;
+const _DAY_MS = 86_400_000;
 
 function clockTime(t: number): string {
   const d = new Date(t);
@@ -519,7 +933,7 @@ const MAX_LANES_PER_DAY = 14;
 /** How many days the timeline renders. */
 const MAX_TIMELINE_DAYS = 45;
 
-function timelineSection(stats: Stats, anon: Anonymizer): string {
+function timelineSection(stats: Stats, anon: Anonymizer, initialZoom: HourRange | null): string {
   if (stats.timeline.length === 0) return '';
 
   // Newest day first — the recent past is what gets looked at.
@@ -532,6 +946,23 @@ function timelineSection(stats: Stats, anon: Anonymizer): string {
         `<span style="left:${((hour / 24) * 100).toFixed(2)}%">${String(hour).padStart(2, '0')}</span>`,
     )
     .join('');
+
+  const presets: Array<[string, number, number]> = [
+    ['All day', 0, 1],
+    ['Morning', 6 / 24, 12 / 24],
+    ['Afternoon', 12 / 24, 18 / 24],
+    ['Evening', 18 / 24, 1],
+    ['09–19', 9 / 24, 19 / 24],
+  ];
+  const zoomBar = `      <div class="tl-zoom" role="group" aria-label="Zoom the timeline to a time of day">
+${presets
+  .map(
+    ([label, from, to]) =>
+      `        <button type="button" data-from="${from}" data-to="${to}">${esc(label)}</button>`,
+  )
+  .join('\n')}
+        <span class="tl-range" data-tl-range></span>
+      </div>`;
 
   const rows = days
     .map((day, index) => {
@@ -583,7 +1014,25 @@ function timelineSection(stats: Stats, anon: Anonymizer): string {
         })
         .join('\n');
 
-      const note = hidden > 0 ? `<p class="tl-note">and ${hidden} shorter session${hidden === 1 ? '' : 's'}</p>` : '';
+      const note =
+        hidden > 0
+          ? `<p class="tl-note">and ${hidden} shorter session${hidden === 1 ? '' : 's'}</p>`
+          : '';
+
+      // Parallel agents per clock hour — the count, not just the shading.
+      const hourCells = day.hours
+        .map((bucket) => {
+          const step = Math.min(Math.max(1, bucket.peak), 4);
+          const cls = bucket.peak === 0 ? 'z' : `lv${step}`;
+          const title =
+            bucket.peak === 0
+              ? `${String(bucket.hour).padStart(2, '0')}:00 — no agents working`
+              : `${String(bucket.hour).padStart(2, '0')}:00 — up to ${bucket.peak} agent${bucket.peak === 1 ? '' : 's'} at once, ${bucket.sessions} session${bucket.sessions === 1 ? '' : 's'} active, ${duration(bucket.activeMs)} of work`;
+          const left = ((bucket.hour / 24) * 100).toFixed(3);
+          const width = (100 / 24).toFixed(3);
+          return `<i class="${cls}" data-h="${bucket.hour}" style="left:${left}%;width:${width}%" title="${esc(title)}">${bucket.peak === 0 ? '·' : bucket.peak}</i>`;
+        })
+        .join('');
 
       return `      <details class="tl-day"${index === 0 ? ' open' : ''}>
         <summary>
@@ -595,6 +1044,11 @@ function timelineSection(stats: Stats, anon: Anonymizer): string {
         </summary>
         <div class="tl-lanes">
           <p class="tl-note">${day.lanes.length} session${day.lanes.length === 1 ? '' : 's'} worked this day · peak ${day.peak} at once</p>
+          <div class="tl-row">
+            <span class="tl-name">agents / hour</span>
+            <span class="tl-hours">${hourCells}</span>
+            <span class="tl-total"></span>
+          </div>
 ${laneRows}
           ${note}
         </div>
@@ -610,10 +1064,12 @@ ${laneRows}
       truncated ? ` · most recent ${days.length} of ${stats.timeline.length} days` : ''
     }</p>
     <figure>
-      <div class="tl">
+${zoomBar}
+      <div class="tl" data-tl${initialZoom ? ` data-from="${initialZoom.from}" data-to="${initialZoom.to}"` : ''}>
         <div class="tl-row tl-axis"><span class="tl-name"></span><span class="tl-track tl-ticks">${axis}</span><span class="tl-total"></span></div>
 ${rows}
       </div>
+      <p class="tl-hint">Drag across any row to zoom into that interval · double-click or Esc to reset · totals on the right are always the whole day</p>
       <div class="legend" style="margin-top:16px">
         <span class="key ramp">
           <span>1</span>
@@ -627,6 +1083,68 @@ ${rows}
       </div>
     </figure>
   </section>`;
+}
+
+/**
+ * Hourly distribution, with a day selector.
+ *
+ * Two measures, switchable, because they answer different questions: how many
+ * sessions touched an hour at all, and how many were running at once inside it.
+ * They share no axis, so they are never drawn together.
+ */
+function hourlySection(stats: Stats): string {
+  if (stats.timeline.length === 0) return '';
+
+  const options = [...stats.timeline]
+    .reverse()
+    .map((day) => {
+      const label = new Date(day.midnight).toLocaleDateString(undefined, {
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+      });
+      return `<option value="${esc(day.day)}">${esc(label)}</option>`;
+    })
+    .join('');
+
+  const axis = Array.from({ length: 24 }, (_, hour) =>
+    hour % 2 === 0 ? `<span>${String(hour).padStart(2, '0')}</span>` : '<span></span>',
+  ).join('');
+
+  return `  <section>
+    <h2>Hourly distribution</h2>
+    <p class="sub">An hour counts a session if it was working at any point inside it, however briefly</p>
+    <figure>
+      <div class="hz-controls">
+        <label>Day
+          <select data-hz-day>
+            <option value="*">All days</option>
+${options}
+          </select>
+        </label>
+        <div class="tl-zoom" role="group" aria-label="Which measure to chart">
+          <button type="button" data-hz-metric="sessions" aria-pressed="true">Sessions active</button>
+          <button type="button" data-hz-metric="peak" aria-pressed="false">Agents at once</button>
+          <button type="button" data-hz-metric="activeMs" aria-pressed="false">Time worked</button>
+        </div>
+      </div>
+      <div class="hz-chart" data-hz-chart></div>
+      <div class="hz-axis">${axis}</div>
+    </figure>
+  </section>`;
+}
+
+/** The hourly buckets, as compact JSON for the selector to switch between. */
+function hourlyData(stats: Stats): string {
+  const compact = (buckets: Stats['hourly']) =>
+    buckets.map((b) => [b.sessions, b.peak, Math.round(b.activeMs / 1000)]);
+
+  const payload = {
+    all: compact(stats.hourly),
+    days: Object.fromEntries(stats.timeline.map((day) => [day.day, compact(day.hours)])),
+  };
+  // Closing tags inside a script block would end it early.
+  return JSON.stringify(payload).replace(/</g, '\\u003c');
 }
 
 function projectSection(stats: Stats, anon: Anonymizer): string {
@@ -745,7 +1263,8 @@ export function renderReport(input: ReportInput): string {
 ${tiles}
     </div>
   </section>`,
-    timelineSection(stats, anon),
+    timelineSection(stats, anon, input.zoom ?? null),
+    hourlySection(stats),
     concurrencySection(stats),
     dailySection(stats),
     projectSection(stats, anon),
@@ -774,6 +1293,8 @@ ${notes.join('\n')}
     <div class="meta">${esc(dateTime(generatedAt))}</div>
   </header>
 ${body}
+  <script>window.__cctrackHours=${hourlyData(stats)};</script>
+  <script>${SCRIPT}</script>
   <footer>
     Generated by cctrack from ~/.claude · a session with N subagents counts once.<br>
     Working time comes from Claude Code's own per-turn duration records, not from sampling or estimation.<br>

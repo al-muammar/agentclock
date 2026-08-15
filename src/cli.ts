@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { Anonymizer } from './project.js';
 import { computeStats } from './stats.js';
-import { duration, parseWindow } from './format.js';
+import { duration, parseHourRange, parseWindow, type HourRange } from './format.js';
 import { defaultReportPath } from './paths.js';
 import { loadArchive, mergeArchive, saveArchive, emptyArchive } from './archive.js';
 import { readLiveSessions } from './registry.js';
@@ -39,6 +39,7 @@ const HELP = `
     --anonymize             Replace project and session names with stable pseudonyms
     -o, --out <file>        Where to write the dashboard
     --no-open               Write the dashboard without opening it
+    --hours <range>         Zoom the timeline: 9-18, 09:30-13:00
     --interval <seconds>    Refresh rate for watch  (default 2)
     --no-archive            Do not read or update ~/.cctrack/archive.jsonl
     --json                  Machine-readable output
@@ -62,6 +63,7 @@ interface Options {
   open: boolean;
   archive: boolean;
   interval: number;
+  hours: HourRange | null;
 }
 
 export function parseArgs(argv: string[]): { options: Options; error?: string } {
@@ -76,6 +78,7 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
     open: true,
     archive: true,
     interval: 2,
+    hours: null,
   };
 
   const rest: string[] = [];
@@ -98,6 +101,16 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
       case '--no-open':
         options.open = false;
         break;
+      case '--hours': {
+        const value = argv[++i];
+        if (!value) return { options, error: '--hours needs a range, e.g. --hours 9-18' };
+        const range = parseHourRange(value);
+        if (range === null) {
+          return { options, error: `Not a valid hour range: ${value}. Try 9-18 or 09:30-13:00.` };
+        }
+        options.hours = range;
+        break;
+      }
       case '--no-archive':
         options.archive = false;
         break;
@@ -130,6 +143,12 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
           const ms = parseWindow(arg.slice('--since='.length));
           if (ms === null) return { options, error: `Not a valid window: ${arg}` };
           options.since = ms;
+          break;
+        }
+        if (arg.startsWith('--hours=')) {
+          const range = parseHourRange(arg.slice('--hours='.length));
+          if (range === null) return { options, error: `Not a valid hour range: ${arg}` };
+          options.hours = range;
           break;
         }
         if (arg.startsWith('--out=')) {
@@ -260,6 +279,7 @@ async function commandReport(options: Options): Promise<number> {
     anon,
     windowLabel: windowLabel(options),
     generatedAt: Date.now(),
+    zoom: options.hours,
   });
 
   const out = options.out ?? defaultReportPath();
@@ -287,7 +307,7 @@ async function commandTimeline(options: Options): Promise<number> {
 
   // Leave room for the date column, the totals, and a little breathing space.
   const width = process.stdout.columns ?? 100;
-  process.stdout.write(renderTimeline(stats, Math.max(24, width - 36)));
+  process.stdout.write(renderTimeline(stats, Math.max(24, width - 36), options.hours));
   return 0;
 }
 

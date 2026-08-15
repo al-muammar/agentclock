@@ -104,11 +104,21 @@ test('chart labels are escaped', () => {
 
 // ---------- the report document ----------
 
-test('the report is self-contained: no scripts, no network', () => {
+test('the report is self-contained: nothing is fetched', () => {
+  // The requirement is self-containment, not the absence of script: the report
+  // is handed around as a file and must render identically with no network.
   const html = report([session()]);
-  assert.ok(!/<script/i.test(html), 'no scripts');
   assert.ok(!/https?:\/\//.test(html), 'no external URLs');
   assert.ok(!/\ssrc=/.test(html), 'no external resources');
+  assert.ok(!/<link/i.test(html), 'no external stylesheets');
+  assert.ok(!/@import/i.test(html), 'no CSS imports');
+});
+
+test('any script in the report is inline', () => {
+  const html = report([session()]);
+  for (const tag of html.match(/<script[^>]*>/gi) ?? []) {
+    assert.ok(!/\ssrc=/i.test(tag), `script must not load anything: ${tag}`);
+  }
 });
 
 test('the report defines both themes and declares color-scheme', () => {

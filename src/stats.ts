@@ -44,6 +44,54 @@ export interface ProjectBucket {
 }
 
 /** One day's worth of activity, positioned within the day. */
+/**
+ * One hour of the day.
+ *
+ * `sessions` counts a session if it was working at any point in the hour, however
+ * briefly — occupancy, not duration. `peak` is the most that overlapped at once
+ * within the hour.
+ */
+export interface HourBucket {
+  hour: number;
+  sessions: number;
+  peak: number;
+  activeMs: number;
+  /** Days that had any activity in this hour. Always 1 for a single day. */
+  days: number;
+}
+
+/** Walk the local clock hours a range touches, clipped to it. */
+function eachLocalHour(
+  start: number,
+  end: number,
+  visit: (from: number, to: number, hour: number) => void,
+): void {
+  if (end <= start) return;
+  const cursor = new Date(start);
+  cursor.setMinutes(0, 0, 0);
+  let at = cursor.getTime();
+  // Guard against a pathological range rather than looping forever.
+  for (let guard = 0; at < end && guard < 100_000; guard++) {
+    const next = new Date(at);
+    next.setHours(next.getHours() + 1);
+    const nextAt = next.getTime();
+    const from = Math.max(at, start);
+    const to = Math.min(nextAt, end);
+    if (to > from) visit(from, to, new Date(at).getHours());
+    at = nextAt;
+  }
+}
+
+function emptyHours(): HourBucket[] {
+  return Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    sessions: 0,
+    peak: 0,
+    activeMs: 0,
+    days: 0,
+  }));
+}
+
 /** One session's working time within a single day — a lane in the expanded view. */
 export interface TimelineLane {
   sessionId: string;
@@ -68,6 +116,8 @@ export interface TimelineDay {
   intervals: Interval[];
   /** Per-session detail, busiest first. */
   lanes: TimelineLane[];
+  /** 24 entries, one per local clock hour. */
+  hours: HourBucket[];
 }
 
 export interface Stats {
@@ -77,6 +127,8 @@ export interface Stats {
   projects: ProjectBucket[];
   sessions: SessionRecord[];
   timeline: TimelineDay[];
+  /** Hourly distribution across every day in the window. */
+  hourly: HourBucket[];
 }
 
 /** Local midnight for a `YYYY-MM-DD` key. */
@@ -154,16 +206,75 @@ export function buildTimeline(
     .filter((d) => byDay.has(d.day) || d.activeMs > 0)
     .map((d) => {
       const midnight = midnightOf(d.day);
+      const dayIntervals = byDay.get(d.day) ?? [];
+      const dayLanes = lanesByDay.get(d.day) ?? [];
       return {
         day: d.day,
         midnight,
         dayMs: nextLocalDay(midnight) - midnight,
         activeMs: d.activeMs,
         peak: d.peak,
-        intervals: byDay.get(d.day) ?? [],
-        lanes: lanesByDay.get(d.day) ?? [],
+        intervals: dayIntervals,
+        lanes: dayLanes,
+        hours: hoursOfDay(dayIntervals, dayLanes),
       };
     });
+}
+
+/**
+ * Bucket a single day into local clock hours.
+ *
+ * A session counts toward an hour if it was working at any point inside it, however
+ * briefly — the question "was this hour worked" is about occupancy, not duration.
+ */
+export function hoursOfDay(intervals: Interval[], lanes: TimelineLane[]): HourBucket[] {
+  const buckets = emptyHours();
+  const seen = Array.from({ length: 24 }, () => new Set<string>());
+
+  for (const lane of lanes) {
+    for (const span of lane.spans) {
+      eachLocalHour(span.start, span.end, (from, to, hour) => {
+        const bucket = buckets[hour]!;
+        bucket.activeMs += to - from;
+        seen[hour]!.add(lane.sessionId);
+      });
+    }
+  }
+
+  for (const interval of intervals) {
+    eachLocalHour(interval.start, interval.end, (_from, _to, hour) => {
+      const bucket = buckets[hour]!;
+      if (interval.level > bucket.peak) bucket.peak = interval.level;
+    });
+  }
+
+  for (let hour = 0; hour < 24; hour++) {
+    buckets[hour]!.sessions = seen[hour]!.size;
+    buckets[hour]!.days = buckets[hour]!.activeMs > 0 ? 1 : 0;
+  }
+  return buckets;
+}
+
+/** Sum per-day hourly buckets into one distribution for the whole window. */
+export function aggregateHours(days: TimelineDay[]): HourBucket[] {
+  const total = emptyHours();
+  for (const day of days) {
+    for (let hour = 0; hour < 24; hour++) {
+      const from = day.hours[hour]!;
+      const into = total[hour]!;
+      into.sessions += from.sessions;
+      into.activeMs += from.activeMs;
+      into.days += from.days;
+      if (from.peak > into.peak) into.peak = from.peak;
+    }
+  }
+  return total;
+}
+
+function _startOfLocalDay(t: number): number {
+  const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
 }
 
 function nextLocalDay(t: number): number {
@@ -400,6 +511,8 @@ export function computeStats(
   }
   const projects = [...projectMap.values()].sort((a, b) => b.activeMs - a.activeMs);
 
+  const timeline = buildTimeline(intervals, days, sessions);
+
   return {
     summary: {
       sessions: sessions.length,
@@ -421,6 +534,7 @@ export function computeStats(
     days,
     projects,
     sessions,
-    timeline: buildTimeline(intervals, days, sessions),
+    timeline,
+    hourly: aggregateHours(timeline),
   };
 }

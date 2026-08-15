@@ -122,7 +122,8 @@ export function timelineTrack(bars: TimelineBar[], label?: string): string {
     .join('');
 
   const aria = label ? ` role="img" aria-label="${esc(label)}"` : '';
-  return `<span class="tl-track"${aria}>${segments}</span>`;
+  // Bars sit on their own layer so zoom is a single transform per track.
+  return `<span class="tl-track"${aria}><span class="tl-bars">${segments}</span></span>`;
 }
 
 export interface VBarItem {

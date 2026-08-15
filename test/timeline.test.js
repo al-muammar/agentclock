@@ -303,12 +303,109 @@ test('the timeline markup is balanced', () => {
   }
 });
 
-test('the timeline stays script-free', () => {
+test('the drill-down works without JavaScript', () => {
   const start = day(2026, 8, 12, 9);
   const html = laneReport([session('a', '/r', [{ start, end: start + HOUR }])]);
-  // The drill-down uses <details>, not JavaScript.
-  assert.ok(!/<script/i.test(html));
-  assert.ok(!/onclick/i.test(html));
+  // Zoom needs script, but expanding a day must not: it is plain <details>, and
+  // no behaviour is wired through inline event attributes.
+  assert.match(html, /<details class="tl-day"/);
+  assert.ok(!/\son[a-z]+=/i.test(html), 'no inline event handlers');
+});
+
+test('the timeline renders its full day before any script runs', () => {
+  const start = day(2026, 8, 12, 9);
+  const html = laneReport([session('a', '/r', [{ start, end: start + HOUR }])]);
+  // With scripting off the bars are already positioned across the whole day.
+  const section = html.slice(html.indexOf('When agents were working'));
+  assert.match(section, /class="b lv\d"[^>]*left:/);
+  assert.ok(!section.includes('class="tl zoomed"'), 'starts unzoomed');
+});
+
+// ---------- hourly distribution ----------
+
+test('an hour counts a session that worked in it at all, however briefly', () => {
+  const start = day(2026, 8, 12, 9, 58);
+  // One session works two minutes at the end of 09:00; another straddles into 10:00.
+  const stats = computeStats([
+    session('brief', '/r/a', [{ start, end: start + 2 * MIN }]),
+    session('long', '/r/b', [{ start: start + 1 * MIN, end: start + 62 * MIN }]),
+  ]);
+  const entry = stats.timeline.find((t) => t.day === dayKey(start));
+
+  assert.equal(entry.hours[9].sessions, 2, 'a two-minute session still occupies its hour');
+  assert.equal(entry.hours[10].sessions, 1, 'only the straddling session reaches 10:00');
+  assert.equal(entry.hours[8].sessions, 0);
+  // Occupancy, not duration: one minute in an hour counts the same as sixty.
+  assert.ok(entry.hours[9].activeMs < 5 * MIN);
+});
+
+test('hourly peak is the most that overlapped inside the hour', () => {
+  const start = day(2026, 8, 12, 14);
+  const stats = computeStats([
+    session('a', '/r/a', [{ start, end: start + 40 * MIN }]),
+    session('b', '/r/b', [{ start: start + 10 * MIN, end: start + 20 * MIN }]),
+    session('c', '/r/c', [{ start: start + 12 * MIN, end: start + 18 * MIN }]),
+  ]);
+  const entry = stats.timeline.find((t) => t.day === dayKey(start));
+  assert.equal(entry.hours[14].peak, 3);
+  assert.equal(entry.hours[14].sessions, 3);
+  assert.equal(entry.hours[15].peak, 0);
+});
+
+test('hourly buckets cover the clock and hold their own active time', () => {
+  const start = day(2026, 8, 12, 11);
+  const stats = computeStats([session('a', '/r', [{ start, end: start + 90 * MIN }])]);
+  const entry = stats.timeline.find((t) => t.day === dayKey(start));
+
+  assert.equal(entry.hours.length, 24);
+  assert.deepEqual(
+    entry.hours.map((h) => h.hour),
+    Array.from({ length: 24 }, (_, i) => i),
+  );
+  assert.equal(entry.hours[11].activeMs, 60 * MIN);
+  assert.equal(entry.hours[12].activeMs, 30 * MIN);
+  const summed = entry.hours.reduce((sum, h) => sum + h.activeMs, 0);
+  assert.equal(summed, entry.activeMs, 'hours must account for the whole day');
+});
+
+test('the aggregate sums sessions across days but keeps peak as a maximum', () => {
+  const d1 = day(2026, 8, 12, 9);
+  const d2 = day(2026, 8, 13, 9);
+  const stats = computeStats([
+    session('a', '/r/a', [{ start: d1, end: d1 + 30 * MIN }]),
+    session('b', '/r/b', [{ start: d1, end: d1 + 30 * MIN }]),
+    session('c', '/r/c', [{ start: d2, end: d2 + 30 * MIN }]),
+  ]);
+
+  assert.equal(stats.hourly[9].sessions, 3, 'occupancy adds up across days');
+  assert.equal(stats.hourly[9].peak, 2, 'but two at once is still two at once');
+  assert.equal(stats.hourly[9].days, 2);
+});
+
+test('the report ships the hourly data and a day selector', () => {
+  const start = day(2026, 8, 12, 9);
+  const html = laneReport([session('a', '/r', [{ start, end: start + HOUR }])]);
+  assert.match(html, /Hourly distribution/);
+  assert.match(html, /data-hz-day/);
+  assert.match(html, /data-hz-metric="peak"/);
+  assert.match(html, /window\.__cctrackHours=/);
+  // The embedded JSON must not be able to close the script block early.
+  const payload = /window\.__cctrackHours=(.*?);<\/script>/s.exec(html);
+  assert.ok(payload, 'hourly payload present');
+  assert.ok(!payload[1].includes('</'), 'payload must not contain a closing tag');
+  assert.doesNotThrow(() => JSON.parse(payload[1].replace(/\\u003c/g, '<')));
+});
+
+test('each opened day shows parallel agents per hour', () => {
+  const start = day(2026, 8, 12, 9);
+  const html = laneReport([
+    session('a', '/r/a', [{ start, end: start + HOUR }]),
+    session('b', '/r/b', [{ start, end: start + HOUR }]),
+  ]);
+  assert.match(html, /agents \/ hour/);
+  // 24 positioned cells, each tagged with its hour so zoom can reposition them.
+  assert.equal((html.match(/data-h="\d+"/g) ?? []).length, 24);
+  assert.match(html, /data-h="9"[^>]*>2</);
 });
 
 test('the terminal timeline marks active cells and leaves the rest blank', () => {
