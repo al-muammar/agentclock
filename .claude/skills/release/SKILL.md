@@ -124,6 +124,18 @@ npm publish                         # prepublishOnly re-runs check + typecheck +
 `npm publish` is outward-facing and irreversible. Confirm with the user
 immediately before running it unless they have already said to go all the way.
 
+**The account has 2FA on, so `npm publish` will fail with `EOTP` when run from
+here.** An agent cannot supply the one-time password. Do not retry, and do not
+try to route around it — hand the step to the user and ask them to run it in
+the session so its output lands in the conversation:
+
+```
+! npm publish --otp=<code from the authenticator>
+```
+
+Everything before this step is already done and durable at that point: the tag
+is pushed and CI is green, so the publish is the only thing outstanding.
+
 ## 9. GitHub Release
 
 ```sh
