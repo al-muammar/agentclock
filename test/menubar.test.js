@@ -81,7 +81,8 @@ write('12.abc123.key', 'not json at all');
 write('13.json', { pid: LIVE, sessionId: '66666666-0000-0000-0000-000000000000', cwd: '/tmp/p' });
 
 process.env['CLAUDE_CONFIG_DIR'] = root;
-const { readLiveSessions } = await import('../dist/registry.js');
+// The Claude adapter is the reference implementation the Swift app has to match.
+const { readLiveSessions } = await import('../dist/agents/claude.js');
 
 test('menu bar app is built', { skip: !runnable }, () => {
   if (!existsSync(binary)) {

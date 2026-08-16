@@ -12,6 +12,7 @@ const HOUR = 3_600_000;
 
 /** A session working `spans` on real local days — day bucketing is local. */
 const session = (over = {}) => ({
+  agent: 'claude',
   sessionId: 's1',
   cwd: '/Users/me/clients/acme',
   project: '/Users/me/clients/acme',
@@ -232,7 +233,29 @@ test('sessions with no turn data report zero rather than an estimate', () => {
   ]);
   const stream = contentStream(pdf);
   assert.match(stream, /nothing to chart/, 'the page has to say why it is empty');
-  assert.match(stream, /2\.1\.222/, 'and why the time is missing');
+  assert.match(stream, /record no per-turn durations/, 'and why the time is missing');
+});
+
+test('the one-pager names the agents it covers, not just Claude Code', () => {
+  // The page is handed to someone who was not there. Titling it "Claude Code"
+  // while charting Codex work misreports its scope to the reader least able to
+  // notice, so the title and the PDF metadata both follow the data.
+  const claudeOnly = contentStream(onePager([onDay('a', 2026, 7, 21, 3)]));
+  assert.match(claudeOnly, /Claude Code sessions/);
+  assert.doesNotMatch(claudeOnly, /Codex/);
+
+  const mixed = onePager([
+    onDay('a', 2026, 7, 21, 3),
+    onDay('b', 2026, 7, 21, 1, { agent: 'codex', project: '/Users/me/api', label: 'api' }),
+  ]);
+  const stream = contentStream(mixed);
+  assert.match(stream, /Claude Code and Codex sessions/);
+  assert.match(stream, /Concurrency counts sessions, not agents/);
+  assert.match(
+    mixed.toString('latin1'),
+    /Claude Code and Codex sessions/,
+    'the document metadata title too',
+  );
 });
 
 test('the page never spills onto a second sheet, however much there is to show', () => {

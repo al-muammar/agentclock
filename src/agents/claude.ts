@@ -1,13 +1,17 @@
 import { createReadStream } from 'node:fs';
 import type { Dirent } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 
-import { projectsDir } from './paths.js';
-import { attribute } from './project.js';
-import { mergeSpans, totalMs } from './spans.js';
-import type { ParseResult, SessionRecord, Span } from './types.js';
+import { claudeProjectsDir, claudeRoot, claudeSessionsDir } from '../paths.js';
+import { attribute } from '../project.js';
+import { pidAlive, rejectRecycledPids } from '../proc.js';
+import { mergeSpans, totalMs } from '../spans.js';
+import type { LiveSession, ParseResult, SessionFile, SessionRecord, Span } from '../types.js';
+import type { AgentAdapter, AgentListing } from './types.js';
+
+export const CLAUDE_ID = 'claude';
 
 /** The record Claude Code writes at the end of every completed agent turn. */
 const TURN_MARKER = '"turn_duration"';
@@ -16,11 +20,8 @@ const PROMPT_MARKER = '"promptSource"';
 
 const TIMESTAMP_RE = /"timestamp":"([^"]+)"/;
 
-export interface TranscriptFile {
-  file: string;
-  mtimeMs: number;
-  size: number;
-}
+/** Session kinds that are infrastructure rather than someone's coding session. */
+const EXCLUDED_KINDS: ReadonlySet<string> = new Set(['daemon', 'daemon-worker']);
 
 /**
  * Every main-thread transcript.
@@ -31,16 +32,16 @@ export interface TranscriptFile {
  * 244 MB skipped on the author's machine) and the correct semantics: a subagent is
  * part of its parent session, never a session of its own.
  */
-export async function listTranscripts(): Promise<TranscriptFile[]> {
-  const root = projectsDir();
+export async function listTranscripts(): Promise<AgentListing> {
+  const root = claudeProjectsDir();
   let slugs: string[];
   try {
     slugs = await readdir(root);
   } catch {
-    return [];
+    return { files: [] };
   }
 
-  const files: TranscriptFile[] = [];
+  const files: SessionFile[] = [];
   for (const slug of slugs) {
     const dir = path.join(root, slug);
     let entries: Dirent[];
@@ -60,7 +61,7 @@ export async function listTranscripts(): Promise<TranscriptFile[]> {
       }
     }
   }
-  return files;
+  return { files };
 }
 
 /**
@@ -70,7 +71,7 @@ export async function listTranscripts(): Promise<TranscriptFile[]> {
  * before JSON.parse. Attachment records are roughly a third of all lines and most of
  * the bytes, and nothing in them matters here, so 99% of lines never get parsed.
  */
-export async function parseTranscript(tf: TranscriptFile): Promise<ParseResult> {
+export async function parseTranscript(tf: SessionFile): Promise<ParseResult> {
   const stream = createReadStream(tf.file, { encoding: 'utf8' });
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
 
@@ -169,6 +170,7 @@ export async function parseTranscript(tf: TranscriptFile): Promise<ParseResult> 
   const endedAt = Math.max(last, spans[spans.length - 1]?.end ?? last);
 
   const record: SessionRecord = {
+    agent: CLAUDE_ID,
     sessionId,
     cwd: workingDir,
     project,
@@ -189,59 +191,90 @@ export async function parseTranscript(tf: TranscriptFile): Promise<ParseResult> 
   return { record, lines, parsed };
 }
 
-export interface ScanOptions {
-  /** Files already parsed and unchanged since — skipped entirely. */
-  skip?: (tf: TranscriptFile) => boolean;
-  onProgress?: (done: number, total: number) => void;
-  /** Files parsed at once. Bounded so a huge ~/.claude can't exhaust file handles. */
-  concurrency?: number;
+function toSession(raw: unknown): LiveSession | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r['pid'] !== 'number') return null;
+  if (typeof r['sessionId'] !== 'string') return null;
+  if (typeof r['cwd'] !== 'string') return null;
+
+  const session: LiveSession = {
+    agent: CLAUDE_ID,
+    pid: r['pid'],
+    sessionId: r['sessionId'],
+    cwd: r['cwd'],
+    startedAt: typeof r['startedAt'] === 'number' ? r['startedAt'] : Date.now(),
+    // Carried verbatim. An unrecognised status must surface, not be coerced.
+    status: typeof r['status'] === 'string' ? r['status'] : 'unknown',
+    kind: typeof r['kind'] === 'string' ? r['kind'] : 'interactive',
+  };
+
+  if (typeof r['name'] === 'string') session.name = r['name'];
+  if (typeof r['waitingFor'] === 'string') session.waitingFor = r['waitingFor'];
+  if (typeof r['version'] === 'string') session.version = r['version'];
+  if (typeof r['entrypoint'] === 'string') session.entrypoint = r['entrypoint'];
+  if (typeof r['procStart'] === 'string') session.procStart = r['procStart'];
+  if (typeof r['updatedAt'] === 'number') session.updatedAt = r['updatedAt'];
+  if (typeof r['statusUpdatedAt'] === 'number') session.statusUpdatedAt = r['statusUpdatedAt'];
+
+  return session;
 }
 
-export interface ScanResult {
-  records: SessionRecord[];
-  scanned: number;
-  skipped: number;
-  lines: number;
-  parsedLines: number;
-}
-
-/** Parse every transcript that isn't already known, with bounded parallelism. */
-export async function scanTranscripts(options: ScanOptions = {}): Promise<ScanResult> {
-  const all = await listTranscripts();
-  const todo = options.skip ? all.filter((tf) => !options.skip!(tf)) : all;
-
-  const limit = Math.max(1, options.concurrency ?? 8);
-  const records: SessionRecord[] = [];
-  let lines = 0;
-  let parsedLines = 0;
-  let done = 0;
-  let cursor = 0;
-
-  async function worker(): Promise<void> {
-    for (;;) {
-      const index = cursor++;
-      if (index >= todo.length) return;
-      const tf = todo[index]!;
-      try {
-        const result = await parseTranscript(tf);
-        lines += result.lines;
-        parsedLines += result.parsed;
-        if (result.record) records.push(result.record);
-      } catch {
-        // unreadable transcript — skip rather than abort the run
-      }
-      done++;
-      options.onProgress?.(done, todo.length);
-    }
+/**
+ * Every Claude Code session running right now.
+ *
+ * Note there is exactly one entry per session, not per agent: subagents run inside
+ * their parent and share its sessionId, so a session with five subagents working
+ * appears here once. That is the "N subagents count as 1" rule, and it needs no code.
+ */
+export async function readLiveSessions(): Promise<LiveSession[]> {
+  const dir = claudeSessionsDir();
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
   }
 
-  await Promise.all(Array.from({ length: Math.min(limit, todo.length) }, worker));
+  const files = entries.filter((f) => f.endsWith('.json'));
+  const parsed: LiveSession[] = [];
 
-  return {
-    records,
-    scanned: todo.length,
-    skipped: all.length - todo.length,
-    lines,
-    parsedLines,
-  };
+  for (const file of files) {
+    let text: string;
+    try {
+      text = await readFile(path.join(dir, file), 'utf8');
+    } catch {
+      continue; // session exited mid-read
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      continue; // torn write
+    }
+    const session = toSession(raw);
+    if (!session) continue;
+    if (EXCLUDED_KINDS.has(session.kind)) continue; // infrastructure, not a coding session
+    if (!pidAlive(session.pid)) continue;
+    parsed.push(session);
+  }
+
+  return rejectRecycledPids(parsed);
 }
+
+export const claudeAdapter: AgentAdapter = {
+  id: CLAUDE_ID,
+  name: 'Claude Code',
+  root: claudeRoot,
+  async detect(): Promise<boolean> {
+    try {
+      await stat(claudeProjectsDir());
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  list: listTranscripts,
+  parse: parseTranscript,
+  live: readLiveSessions,
+};

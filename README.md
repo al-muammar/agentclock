@@ -1,14 +1,15 @@
 # agentclock
 
-See how many Claude Code sessions you're running, how many are **actually working**,
-and how long each one lives.
+See how many coding-agent sessions you're running, how many are **actually working**,
+and how long each one lives. Reads **Claude Code** and **Codex**, together, in one
+report.
 
 ```sh
 npx agentclock
 ```
 
-No daemon, no install, nothing running in the background. agentclock reads what Claude
-Code has already written to disk and derives the rest.
+No daemon, no install, nothing running in the background. agentclock reads what your
+agents have already written to disk and derives the rest.
 
 ## Install
 
@@ -22,18 +23,19 @@ Node 18.17+, and no runtime dependencies — the install is one package.
 
 ## Why
 
-Claude Code knows what your sessions are doing, but it doesn't keep a record. The
-live status of each session vanishes when the session exits, and transcripts are
-deleted after 30 days. agentclock turns what's on disk into an answer:
+Your agents know what their sessions are doing, but none of them keeps a record. Live
+status vanishes when a session exits, and Claude Code deletes transcripts after 30
+days. agentclock turns what's on disk into an answer:
 
 - How many sessions are open right now, and how many are working versus waiting on you
 - How much of your day had an agent actually running
 - How often you run agents in parallel — and how often you don't
-- Which projects the time went to
+- Which projects the time went to, and which agent did it
 
 **A session with five subagents counts as one session.** Subagents run inside their
 parent and share its session id, so this falls out of the data model rather than
-being a rule the tool applies.
+being a rule the tool applies. **Concurrency is per session, not per agent**: a Claude
+Code session and a Codex session working at the same moment count as two.
 
 ## Usage
 
@@ -44,9 +46,14 @@ agentclock watch          # live view, refreshing in place
 agentclock timeline       # per-day activity timeline
 agentclock stats          # historical summary in the terminal
 agentclock pdf            # one-page PDF summary, for sharing
+agentclock agents         # which agents are installed and readable
 agentclock menubar        # install the macOS menu bar badge
 agentclock report --since 7d --anonymize -o week.html
+agentclock stats --agent codex
 ```
+
+Without `--agent`, every agent found on the machine is read. Name one — or several,
+`--agent claude,codex` — to narrow it.
 
 `agentclock timeline` shows one row per day, midnight to midnight, so you can see
 *when* agents were working rather than just how long:
@@ -96,7 +103,8 @@ agentclock menubar             # build and install it
 agentclock menubar uninstall   # remove it again
 ```
 
-Puts `◐ 4` in the menu bar: how many agents are working right now. Click it for
+Puts `◐ 4` in the menu bar: how many Claude Code sessions are working right now —
+Codex publishes no live state, so nothing can badge it. Click it for
 the list — which sessions, in which projects, for how long — plus *Open
 dashboard*, *Launch at login* and a smoothing setting.
 
@@ -131,6 +139,7 @@ if they are missing rather than failing with a compiler error.
 
 | Flag | Meaning |
 | --- | --- |
+| `--agent <ids>` | Only these agents: `claude`, `codex`. Default: every one found. |
 | `--since <window>` | Time window: `7d`, `24h`, `90m`. Default `30d`. |
 | `--all` | No window — everything on disk. |
 | `--anonymize` | Replace project and session names with stable pseudonyms. |
@@ -148,19 +157,37 @@ still readable, just not about anyone in particular.
 
 ## How it works
 
-Two sources, both already on your disk:
+Everything comes from files already on your disk:
 
-| Source | Gives |
-| --- | --- |
-| `~/.claude/sessions/<pid>.json` | Live state — one file per running session, with a status of `busy`, `waiting` or `idle`. |
-| `~/.claude/projects/<slug>/*.jsonl` | History — every completed turn records its exact duration, so past working time reconstructs precisely. |
+| Source | Agent | Gives |
+| --- | --- | --- |
+| `~/.claude/sessions/<pid>.json` | Claude Code | Live state — one file per running session, with a status of `busy`, `waiting` or `idle`. |
+| `~/.claude/projects/<slug>/*.jsonl` | Claude Code | History — every completed turn records its exact duration. |
+| `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Codex | History — the turn-completion event carries the turn's own start, end and duration. |
 
-Historical **busy** time is exact, not estimated: Claude Code writes a
+Historical **busy** time is exact, not estimated. Claude Code writes a
 `turn_duration` record carrying the real `durationMs` at the end of every turn, so a
 turn that ended at 14:08:47 after six minutes becomes a span of 14:02:47–14:08:47.
+Codex writes a `task_complete` event carrying `started_at`, `completed_at` and
+`duration_ms`, which says the same thing.
 
-Reading 700 MB of transcripts takes about 2.5 seconds, because a substring check
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured if you've relocated either tree.
+
+Reading 700 MB of session files takes about 3 seconds, because a substring check
 before `JSON.parse` means ~99% of lines are never parsed.
+
+### Adding an agent
+
+One file in `src/agents/`, one line in `src/agents/index.ts`. An adapter finds files
+and turns one into a session; everything downstream — spans, stats, timeline, both
+renderers, the archive — treats the agent as an opaque string. The contract is in
+`src/agents/types.ts`, and it holds adapters to the two rules the tool rests on: never
+emit a record for a subagent, and never reconstruct working time the agent didn't
+measure itself.
+
+Agents whose sessions carry no per-turn timing (Gemini CLI, Amp) or that store
+history in SQLite (opencode, Cursor — a runtime dependency agentclock doesn't take)
+aren't shipped for those reasons, not for lack of a seam.
 
 ### History outlives Claude's cleanup
 
@@ -175,24 +202,26 @@ later run     0 files ·   54 ms
 
 A few hundred KB for a year of sessions. Disable with `--no-archive`.
 
-### Two honest limits
+### Honest limits
 
-- **Historical `waiting` isn't recoverable.** Nothing in a transcript distinguishes
+- **Historical `waiting` isn't recoverable.** Nothing in a session file distinguishes
   "blocked on a permission prompt" from "went to lunch". `waiting` appears in
   `agentclock now` and `agentclock watch`, but historical charts show busy and idle only.
-- **Sessions older than Claude Code 2.1.222 record no turn durations.** They're
-  counted, but contribute no active time rather than a fabricated estimate. (An
-  earlier draft estimated it from gaps between records; measured against ground
-  truth that ran 44% low, so it was cut.)
+- **Codex publishes no live session registry**, so it can't appear in `now` or
+  `watch`. agentclock says so in the output rather than letting its absence read as
+  "no Codex sessions are running". Calling a recently-touched rollout "working" would
+  invent a status Codex never reported.
+- **Sessions from agent versions that record no turn durations** — Claude Code before
+  2.1.222, or a Codex rollout predating the turn-completion event — are counted, but
+  contribute no active time rather than a fabricated estimate. (An earlier draft
+  estimated it from gaps between records; measured against ground truth that ran 44%
+  low, so it was cut.)
+- **Codex compresses cold rollouts to `.jsonl.zst`.** Node 18 has no zstd, so those
+  are skipped — and the count is printed, never swallowed.
 
 ## Requirements
 
-Node 18.17+. Reads `CLAUDE_CONFIG_DIR` if you've relocated your Claude config.
-
-Today agentclock reads Claude Code's data and nothing else. The name is deliberately
-tool-neutral: the model it's built on — sessions, spans of real work, one count per
-session regardless of subagents — isn't specific to Claude Code, so other agent CLIs
-can be added as readers without reshaping anything downstream.
+Node 18.17+, and no runtime dependencies.
 
 Nothing is sent anywhere. Everything stays on your machine.
 

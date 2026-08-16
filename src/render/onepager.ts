@@ -1,3 +1,4 @@
+import { agentName } from '../agents/index.js';
 import type { Anonymizer } from '../project.js';
 import { duration, hours as decimalHours } from '../format.js';
 import type { HourBucket, Stats, TimelineDay } from '../stats.js';
@@ -71,16 +72,53 @@ function shortDay(midnight: number): string {
   return new Date(midnight).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
 
+/**
+ * What the page calls itself.
+ *
+ * A one-pager is handed to someone who was not there, so it has to name the agents
+ * it actually covers. Titling a page "Claude Code" while charting Codex work would
+ * misreport its own scope to the one reader least able to notice.
+ */
+function documentTitle(stats: Stats): string {
+  const names = stats.agents.map((a) => agentName(a.agent));
+  if (names.length === 0) return 'Coding agent sessions';
+  if (names.length === 1) return `${names[0]} sessions`;
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} sessions`;
+}
+
+/** Largest title size that clears the date block, floored so it stays a heading. */
+const TITLE_SIZE = 22;
+const TITLE_MIN_SIZE = 14;
+
 function header(page: PdfPage, input: OnePagerInput): number {
   const { summary } = input.stats;
-  page.text('Claude Code sessions', MARGIN, 66, { font: 'bold', size: 22, color: INK });
-
-  label(page, input.windowLabel, RIGHT, 52, MUTED, 7.5, 'right');
 
   const range =
     summary.windowFrom > 0
       ? `${shortDay(summary.windowFrom)} – ${shortDay(summary.windowTo)}`
       : 'no activity recorded';
+
+  // The title shares the line with the window label and the date range, both
+  // right-aligned, so its budget is whatever they leave — measured, not guessed.
+  // Three agents make the title half again as long as one, and a heading that gets
+  // ellipsised into "Claude Code and Cod…" is worse than a heading set a size down.
+  const rightBlock = Math.max(
+    textWidth(input.windowLabel, 'regular', 7.5, 0.9),
+    textWidth(range, 'regular', 10),
+  );
+  const budget = CONTENT - rightBlock - 24;
+
+  const title = documentTitle(input.stats);
+  let size = TITLE_SIZE;
+  while (size > TITLE_MIN_SIZE && textWidth(title, 'bold', size) > budget) size -= 0.5;
+
+  page.text(fitText(title, 'bold', size, budget), MARGIN, 66, {
+    font: 'bold',
+    size,
+    color: INK,
+  });
+
+  label(page, input.windowLabel, RIGHT, 52, MUTED, 7.5, 'right');
   page.text(range, RIGHT, 66, { size: 10, color: INK_2, align: 'right' });
 
   page.line(MARGIN, 80, RIGHT, 80, LINE, 1);
@@ -376,12 +414,17 @@ function projectBars(
 function footer(page: PdfPage, input: OnePagerInput): void {
   const { stats } = input;
   const lines = [
-    'Working time comes from Claude Code’s own per-turn duration records, not from sampling or estimation.',
-    'A session with N subagents counts once. Historical waiting time is absent because a transcript cannot recover it.',
+    'Working time comes from each agent’s own per-turn duration records, not from sampling or estimation.',
+    'A session with N subagents counts once. Historical waiting time is absent because a session file cannot recover it.',
   ];
+  if (stats.agents.length > 1) {
+    lines.push(
+      `Read from ${stats.agents.map((a) => agentName(a.agent)).join(' and ')}. Concurrency counts sessions, not agents: two agents working at the same moment count as two.`,
+    );
+  }
   if (stats.summary.sessionsWithoutTurnData > 0) {
     lines.push(
-      `${stats.summary.sessionsWithoutTurnData} of these sessions predate Claude Code 2.1.222 and record no turn durations; they are counted, but contribute no working time.`,
+      `${stats.summary.sessionsWithoutTurnData} of these sessions come from agent versions that record no per-turn durations; they are counted, but contribute no working time.`,
     );
   }
 
@@ -409,7 +452,7 @@ function footer(page: PdfPage, input: OnePagerInput): void {
 
 function document(page: PdfPage, input: OnePagerInput): Buffer {
   return buildPdf([page], {
-    title: 'Claude Code sessions',
+    title: documentTitle(input.stats),
     subject: input.windowLabel,
     createdAt: input.generatedAt,
   });

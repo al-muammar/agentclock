@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { mergeSpans, totalMs, clip } from '../dist/spans.js';
 import { attribute, Anonymizer } from '../dist/project.js';
-import { parseEtime } from '../dist/registry.js';
+import { parseEtime } from '../dist/proc.js';
 import { parseWindow, duration } from '../dist/format.js';
 import { concurrencyProfile, computeStats, dayKey } from '../dist/stats.js';
 

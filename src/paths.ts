@@ -14,14 +14,31 @@ export function claudeRoot(): string {
   return path.join(homedir(), '.claude');
 }
 
-/** Transcripts: `<root>/projects/<slug>/<sessionId>.jsonl`. */
-export function projectsDir(): string {
+/** Claude Code transcripts: `<root>/projects/<slug>/<sessionId>.jsonl`. */
+export function claudeProjectsDir(): string {
   return path.join(claudeRoot(), 'projects');
 }
 
-/** Live session registry: `<root>/sessions/<pid>.json`. */
-export function sessionsDir(): string {
+/** Claude Code's live session registry: `<root>/sessions/<pid>.json`. */
+export function claudeSessionsDir(): string {
   return path.join(claudeRoot(), 'sessions');
+}
+
+/**
+ * Root of the Codex config directory.
+ *
+ * CODEX_HOME is Codex's own relocation knob and plays the same role as
+ * CLAUDE_CONFIG_DIR, so it gets the same treatment.
+ */
+export function codexRoot(): string {
+  const override = process.env['CODEX_HOME'];
+  if (override?.trim()) return path.resolve(override.trim());
+  return path.join(homedir(), '.codex');
+}
+
+/** Codex rollouts: `<root>/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`. */
+export function codexSessionsDir(): string {
+  return path.join(codexRoot(), 'sessions');
 }
 
 /** Where agentclock keeps its own accumulated history. */

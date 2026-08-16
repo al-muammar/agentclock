@@ -1,8 +1,8 @@
 # agentclock
 
-A CLI that reports how many Claude Code sessions ran, how many were actually
-working, and for how long. It reads files Claude Code already writes — there is
-no daemon and nothing resident.
+A CLI that reports how many coding-agent sessions ran, how many were actually
+working, and for how long. It reads files the agents already write — there is no
+daemon and nothing resident. Ships adapters for Claude Code and Codex.
 
 ## Commands
 
@@ -30,41 +30,63 @@ commit, never a local one, so it can only ever name a tree CI went green on.
 ## Shape
 
 ```
-registry.ts     ~/.claude/sessions/<pid>.json   → live state
-transcripts.ts  ~/.claude/projects/**/*.jsonl   → historical spans
-spans.ts        merge / clip
-stats.ts        spans → concurrency, days, projects, timeline
-archive.ts      ~/.agentclock/archive.jsonl        → history past Claude's 30-day sweep
-render/         term.ts (ANSI) · html.ts + svg.ts (self-contained report)
-                pdf.ts (PDF primitives) + onepager.ts (one-page summary)
+agents/types.ts   the AgentAdapter contract
+agents/claude.ts  ~/.claude/projects/**/*.jsonl + sessions/<pid>.json
+agents/codex.ts   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+agents/index.ts   registry · --agent selection · live snapshot
+scan.ts           adapter-agnostic scan, bounded concurrency
+proc.ts           pid liveness + `ps` ages, shared by any adapter
+spans.ts          merge / clip
+stats.ts          spans → concurrency, days, projects, agents, timeline
+archive.ts        ~/.agentclock/archive.jsonl → history past Claude's 30-day sweep
+render/           term.ts (ANSI) · html.ts + svg.ts (self-contained report)
+                  pdf.ts (PDF primitives) + onepager.ts (one-page summary)
 
-macos/          AgentClock.swift — menu bar badge. Ships as SOURCE in the npm
-                package and is compiled on the user's machine by
-                `agentclock menubar`. One swiftc call, no Xcode project.
+macos/            AgentClock.swift — menu bar badge, and a SECOND implementation
+                  of the Claude liveness rules. Ships as SOURCE in the npm
+                  package and is compiled on the user's machine by
+                  `agentclock menubar`. One swiftc call, no Xcode project.
+                  test/menubar.test.js runs it against agents/claude.ts on one
+                  fixture and fails if they disagree — change one, change both.
 ```
 
-Everything downstream of `stats.ts` consumes **spans**: half-open `[start, end)`
-intervals when a session was working.
+Everything downstream of `scan.ts` consumes **spans**: half-open `[start, end)`
+intervals when a session was working. Nothing downstream of the adapters knows an
+agent's name — `SessionRecord.agent` is an opaque string all the way through.
 
 ## Invariants — don't break these
 
 - **A session with N subagents counts as one.** Subagent transcripts live in
   `<slug>/<sessionId>/subagents/`; only files directly inside a project slug are
-  enumerated. Never walk into `subagents/`.
+  enumerated. Never walk into `subagents/`. Any new adapter owes the same.
 - **Merge spans per session before any sweep.** This is what guarantees one
   session can never contribute more than 1 to a concurrency count.
-- **Active time is exact or absent, never estimated.** It comes from Claude
-  Code's own `turn_duration.durationMs`. Sessions predating 2.1.222 have none and
-  must report zero with `hasTurnData: false` — do not infer it from timestamps. A
-  gap-based heuristic was measured at −44% against ground truth and cut.
+- **Sessions are keyed by agent *and* id.** Agents mint ids independently, so the
+  archive, the concurrency sweep and everything else key on `<agent>:<sessionId>`.
+  A bare id would let one agent's session cancel out another's.
+- **Active time is exact or absent, never estimated.** It comes from the agent's
+  own timing: Claude Code's `turn_duration.durationMs`, Codex's `task_complete`
+  (`started_at`/`completed_at`, else `duration_ms`, else the `task_started` line
+  paired with the `task_complete` line — all three are Codex's own event stream).
+  A session whose agent recorded none must report zero with `hasTurnData: false` —
+  do not infer it from timestamps. A gap-based heuristic was measured at −44%
+  against ground truth and cut.
+- **A missing capability is stated, not faked.** Codex publishes no live registry,
+  so `now`/`watch` name it as unreadable rather than showing an empty list that
+  reads as "nothing is running". Same for the `.jsonl.zst` rollouts Node 18 cannot
+  decompress: the count is printed, never swallowed.
 - **Carry unknown values verbatim.** An unrecognised session `status` becomes its
   own state and surfaces in the output; never coerce it into `busy` or `idle`.
-  The on-disk formats are internal to Claude Code and change between versions.
+  Every on-disk format here is internal to its agent and changes between versions
+  — parse defensively and accept both spellings when one gets renamed.
 - **Liveness and identity guards fail open.** Hiding a real session is far worse
-  than showing a phantom one. See the `ps -o etime=` check in `registry.ts` —
-  the earlier `lstart` version silently reported zero sessions.
+  than showing a phantom one. See the `ps -o etime=` check in `proc.ts` — the
+  earlier `lstart` version silently reported zero sessions.
 - **Zero runtime dependencies.** devDependencies only. This is what makes
   `npx agentclock` start in under a second; adding a dep needs a real reason.
+- **One hue, and it means magnitude.** The teal ramp encodes how many agents are
+  working. Agent *identity* is carried by the monochrome `.tag` chip, never by a
+  second colour scale — that would fight the ramp and would need its own CVD check.
 - **The HTML report stays self-contained.** No network, no external assets — it
   is handed around as a single file and must render identically offline. Script
   is allowed but only inline, and only where markup genuinely cannot do the job:
@@ -115,7 +137,9 @@ intervals when a session was working.
 ## Verifying a change
 
 - `npm test` must pass. New behaviour needs a test in the matching file:
-  `transcripts` · `render` · `pdf` · `archive` · `timeline` · `core` · `cli`.
+  `transcripts` (Claude parsing) · `agents` (Codex parsing, the registry, the
+  scanner, multi-agent stats) · `render` · `pdf` · `archive` · `timeline` ·
+  `core` · `cli`.
 - **Changed the report? Render it and look at it, in both themes.** Markup
   checks alone missed chart tracks going white on dark — the fix was declaring
   `color-scheme: light dark`.
@@ -123,7 +147,12 @@ intervals when a session was working.
   one-pager.pdf --out one-pager.png`. `gs -o /dev/null -sDEVICE=nullpage` and
   `pdfinfo` are independent parsers worth running too — a bad xref offset still
   opens in Preview.
-- Changed parsing or stats? Check it against a real `~/.claude` and compare the
-  totals, not just that it runs. A full scan of ~700 MB should stay around 3s;
-  if it doesn't, time the stages separately — the scan and the stats reduction
-  have each been the culprit once.
+- Changed parsing or stats? Check it against a real `~/.claude` / `~/.codex` and
+  compare the totals, not just that it runs. `stats --all --json` before and after
+  should differ only in `windowTo` and `totalLifetimeMs`, which drift with the
+  clock while a session is live. A full scan of ~700 MB should stay around 3s; if
+  it doesn't, time the stages separately — the scan and the stats reduction have
+  each been the culprit once.
+- Adding an agent? It is one file in `src/agents/` plus one line in
+  `src/agents/index.ts`. Read the contract in `src/agents/types.ts` first — it
+  states the two rules an adapter must not break.

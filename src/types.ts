@@ -5,22 +5,22 @@ export interface Span {
 }
 
 /**
- * Session status as reported by Claude Code's live registry.
+ * Session status as reported by an agent's live registry.
  *
- * The enum inside the Claude Code binary is busy | shell | idle | waiting, but the
- * on-disk format is explicitly internal and changes between versions, so unknown
- * values are carried through verbatim rather than coerced into a known one.
+ * Claude Code's internal enum is busy | shell | idle | waiting, but the on-disk
+ * format is explicitly internal and changes between versions, so unknown values are
+ * carried through verbatim rather than coerced into a known one. The same rule
+ * applies to any other agent that grows a registry.
  */
 export type Status = 'busy' | 'waiting' | 'idle' | 'shell' | (string & {});
 
 /** Statuses that mean an agent is doing work rather than sitting still. */
 export const ACTIVE_STATUSES: ReadonlySet<string> = new Set(['busy', 'shell']);
 
-/** Session kinds that are infrastructure rather than someone's coding session. */
-export const EXCLUDED_KINDS: ReadonlySet<string> = new Set(['daemon', 'daemon-worker']);
-
-/** One entry in `~/.claude/sessions/<pid>.json`, after liveness filtering. */
+/** One live session, as published by an agent that keeps a registry on disk. */
 export interface LiveSession {
+  /** Which agent this session belongs to — `claude`, `codex`, … */
+  agent: string;
   pid: number;
   sessionId: string;
   cwd: string;
@@ -33,23 +33,25 @@ export interface LiveSession {
   waitingFor?: string;
   version?: string;
   entrypoint?: string;
-  /** Process start time as formatted by Claude Code; guards against PID reuse. */
+  /** Process start time as formatted by the agent; guards against PID reuse. */
   procStart?: string;
   updatedAt?: number;
   /** Timestamp of the last status transition. NOT a heartbeat — it does not tick. */
   statusUpdatedAt?: number;
 }
 
-/** A session reconstructed from its transcript. */
+/** A session reconstructed from whatever file its agent writes. */
 export interface SessionRecord {
+  /** Which agent produced this session — `claude`, `codex`, … */
+  agent: string;
   sessionId: string;
-  /** Working directory as recorded inside the transcript. */
+  /** Working directory as recorded inside the session file. */
   cwd: string;
   /** Repo root, with `.claude/worktrees/<name>` folded away. */
   project: string;
   /** Display label — the worktree name when there is one, else the directory name. */
   label: string;
-  /** Claude Code version that wrote the first record carrying one. */
+  /** Agent version that wrote the first record carrying one. */
   version?: string;
   /** First and last record timestamps: the session's lifetime. */
   startedAt: number;
@@ -59,11 +61,12 @@ export interface SessionRecord {
   /** Summed busy time, after merging overlaps. Exact, never estimated. */
   activeMs: number;
   /**
-   * False when the transcript predates Claude Code 2.1.222, which introduced the
-   * turn_duration record. Such sessions report no active time rather than a guess.
+   * False when the session file carries no per-turn timing at all — Claude Code
+   * transcripts before 2.1.222, or a Codex rollout old enough to predate the turn
+   * events. Such sessions report no active time rather than a guess.
    */
   hasTurnData: boolean;
-  /** Prompts actually typed by a human (records carrying `promptSource`). */
+  /** Prompts actually typed by a human. */
   prompts: number;
   /** Merged busy spans. One session never overlaps itself. */
   spans: Span[];
@@ -73,7 +76,19 @@ export interface SessionRecord {
   size: number;
 }
 
-/** What the transcript scanner returns for a single file. */
+/**
+ * One session file on disk, before it is parsed.
+ *
+ * Deliberately not called a transcript: Claude Code writes transcripts, Codex
+ * writes rollouts, and the scanner does not care which.
+ */
+export interface SessionFile {
+  file: string;
+  mtimeMs: number;
+  size: number;
+}
+
+/** What an adapter returns for a single file. */
 export interface ParseResult {
   record: SessionRecord | null;
   /** Lines read and lines that reached JSON.parse — used by --verbose. */

@@ -12,7 +12,8 @@ const { renderTimeline } = await import('../dist/render/term.js');
 const MIN = 60_000;
 const HOUR = 3_600_000;
 
-const session = (id, project, spans) => ({
+const session = (id, project, spans, agent = 'claude') => ({
+  agent,
   sessionId: id,
   cwd: project,
   project,
@@ -201,7 +202,8 @@ test('timelineTrack renders an empty track when there is nothing to show', () =>
 const laneReport = (records, anonymize = false) =>
   renderReport({
     stats: computeStats(records),
-    live: [],
+    live: { sessions: [], blind: [] },
+    sources: [{ id: 'claude', name: 'Claude Code', root: '/home/me/.claude' }],
     anon: new Anonymizer(anonymize),
     windowLabel: 'Last 30d',
     generatedAt: Date.now(),

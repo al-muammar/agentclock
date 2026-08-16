@@ -42,7 +42,7 @@ function token(prefix: string, value: string): string {
  * label across runs and across machines.
  */
 export class Anonymizer {
-  constructor(private readonly enabled: boolean) {}
+  constructor(readonly enabled: boolean) {}
 
   project(p: string): string {
     return this.enabled ? token('project', p) : p;

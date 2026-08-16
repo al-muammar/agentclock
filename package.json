@@ -1,10 +1,14 @@
 {
   "name": "agentclock",
   "version": "0.2.0",
-  "description": "See how many Claude Code sessions you run, how many are actually working, and how long they live.",
+  "description": "See how many coding-agent sessions you run, how many are actually working, and how long they live. Reads Claude Code and Codex.",
   "keywords": [
     "claude",
     "claude-code",
+    "codex",
+    "openai-codex",
+    "coding-agent",
+    "agent",
     "sessions",
     "dashboard",
     "stats",

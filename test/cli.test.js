@@ -93,3 +93,30 @@ test('version matches package.json', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(VERSION, manifest.version);
 });
+
+// ---------- agent selection ----------
+
+test('no --agent means every agent found on the machine', () => {
+  assert.equal(parse([]).options.agents, null);
+});
+
+test('--agent accepts a list, repetition, and the = spelling', () => {
+  assert.deepEqual(parse(['--agent', 'codex']).options.agents, ['codex']);
+  assert.deepEqual(parse(['--agent=claude,codex']).options.agents, ['claude', 'codex']);
+  assert.deepEqual(parse(['--agent', 'claude', '--agent', 'codex']).options.agents, [
+    'claude',
+    'codex',
+  ]);
+});
+
+test('--agent normalises case and whitespace', () => {
+  assert.deepEqual(parse(['--agent', ' Codex , CLAUDE ']).options.agents, ['codex', 'claude']);
+});
+
+test('--agent with no value is an error, not a silent all-agents run', () => {
+  assert.match(parse(['--agent']).error ?? '', /needs an agent id/i);
+});
+
+test('agents is a command', () => {
+  assert.equal(parse(['agents']).options.command, 'agents');
+});

@@ -1,3 +1,6 @@
+import { homedir } from 'node:os';
+
+import { agentName, type LiveSnapshot } from '../agents/index.js';
 import type { Anonymizer } from '../project.js';
 import { dateTime, duration, hours, shortDate, truncate, type HourRange } from '../format.js';
 import { esc, hBarChart, timelineTrack, vBarChart, type BarItem, type VBarItem } from './svg.js';
@@ -178,6 +181,11 @@ const STYLE = `
     align-items: center;
     gap: 10px;
   }
+  /* With more than one agent, every lane carries a tag ahead of its name. Buy the
+     column back the width the tag costs, or each session reads as "trac…". */
+  .tl.multi .tl-row { grid-template-columns: 148px 1fr 62px; }
+  .tl.multi .tl-note,
+  .tl.multi .tl-lanes .tl-note:last-child { margin-left: 158px; }
   .tl-name {
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 11.5px;
@@ -445,6 +453,9 @@ const STYLE = `
   @media (max-width: 620px) {
     .tl-row { grid-template-columns: 68px 1fr 52px; gap: 7px; }
     .tl-note { margin-left: 75px; }
+    .tl.multi .tl-row { grid-template-columns: 112px 1fr 52px; }
+    .tl.multi .tl-note,
+    .tl.multi .tl-lanes .tl-note:last-child { margin-left: 119px; }
   }
 
   .ramp { display: flex; align-items: center; gap: 7px; }
@@ -491,6 +502,24 @@ const STYLE = `
     font-size: 13px;
   }
   .chip b { font-variant-numeric: tabular-nums; }
+
+  /* Agent tag. Deliberately monochrome: the one hue in this report encodes how
+     much work is happening, and a second colour scale for identity would fight it
+     — and would need its own CVD check. Shape and text carry the distinction. */
+  .tag {
+    display: inline-block;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 10px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 0 5px;
+    white-space: nowrap;
+    vertical-align: 1px;
+  }
+  .tl-name .tag { margin-right: 5px; }
 
   .tablewrap {
     overflow-x: auto;
@@ -791,12 +820,19 @@ const SCRIPT = `
 
 export interface ReportInput {
   stats: Stats;
-  live: LiveSession[];
+  live: LiveSnapshot;
   anon: Anonymizer;
+  /** Which agents were read, and from where — printed in the footer. */
+  sources: Array<{ id: string; name: string; root: string }>;
   windowLabel: string;
   generatedAt: number;
   /** Initial zoom window for the timeline, if the caller asked for one. */
   zoom?: HourRange | null;
+}
+
+/** The small uppercase agent tag, used wherever a row could come from either agent. */
+function agentTag(agent: string): string {
+  return `<span class="tag">${esc(agent)}</span>`;
 }
 
 function tile(label: string, value: string, note: string, accent = false): string {
@@ -807,9 +843,27 @@ function tile(label: string, value: string, note: string, accent = false): strin
       </div>`;
 }
 
-function liveSection(live: LiveSession[], anon: Anonymizer): string {
-  if (live.length === 0) return '';
+function liveSection(snapshot: LiveSnapshot, anon: Anonymizer): string {
+  const live = snapshot.sessions;
+  // The blind note is worth a section on its own: "no live rows" and "cannot see
+  // live rows" are different claims, and only one of them is true of Codex.
+  const blindNote =
+    snapshot.blind.length > 0
+      ? `    <p class="sub">Not shown: ${esc(
+          snapshot.blind.map((b) => `${b.name} — ${b.note}`).join('; '),
+        )}</p>`
+      : '';
 
+  if (live.length === 0) {
+    if (!blindNote) return '';
+    return `  <section>
+    <h2>Right now</h2>
+    <p class="sub">No sessions running in the agents that report live state</p>
+${blindNote}
+  </section>`;
+  }
+
+  const multi = new Set(live.map((s) => s.agent)).size > 1 || snapshot.blind.length > 0;
   const active = live.filter((s) => ACTIVE_STATUSES.has(s.status));
   const waiting = live.filter((s) => s.status === 'waiting');
   const idle = live.filter((s) => s.status === 'idle');
@@ -834,7 +888,7 @@ function liveSection(live: LiveSession[], anon: Anonymizer): string {
       const state = s.waitingFor ? `${s.status} · ${s.waitingFor}` : s.status;
       return `          <tr>
             <td class="name">${esc(label)}</td>
-            <td class="dim">${esc(project)}</td>
+${multi ? `            <td>${agentTag(s.agent)}</td>\n` : ''}            <td class="dim">${esc(project)}</td>
             <td><span class="state ${cls}">● ${esc(state)}</span></td>
             <td class="num">${esc(duration(Date.now() - s.startedAt))}</td>
           </tr>`;
@@ -853,10 +907,66 @@ function liveSection(live: LiveSession[], anon: Anonymizer): string {
   return `  <section>
     <h2>Right now</h2>
     <p class="sub">${live.length} session${live.length === 1 ? '' : 's'} open · one row per session, subagents included</p>
+${blindNote}
     <div class="live">${chips.join('\n      ')}</div>
     <div class="tablewrap" style="margin-top:16px">
       <table>
-        <thead><tr><th>Session</th><th>Project</th><th>State</th><th style="text-align:right">Uptime</th></tr></thead>
+        <thead><tr><th>Session</th>${multi ? '<th>Agent</th>' : ''}<th>Project</th><th>State</th><th style="text-align:right">Uptime</th></tr></thead>
+        <tbody>
+${rows}
+        </tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+/**
+ * Which agents did the work.
+ *
+ * Hidden entirely when only one agent contributed — a chart of a single bar
+ * restates the headline tile and earns no space.
+ */
+function agentSection(stats: Stats): string {
+  if (stats.agents.length < 2) return '';
+
+  const items: BarItem[] = stats.agents.map((a) => ({
+    label: agentName(a.agent),
+    value: a.activeMs,
+    display: duration(a.activeMs),
+    title: `${agentName(a.agent)}: ${duration(a.activeMs)} of work across ${a.sessions} session${
+      a.sessions === 1 ? '' : 's'
+    }, ${a.turns} turns, ${a.projects} project${a.projects === 1 ? '' : 's'}`,
+  }));
+
+  const rows = stats.agents
+    .map(
+      (a) => `          <tr>
+            <td class="name">${esc(agentName(a.agent))}</td>
+            <td class="num">${esc(duration(a.activeMs))}</td>
+            <td class="num">${esc(duration(a.coveredMs))}</td>
+            <td class="num">${a.sessions}</td>
+            <td class="num">${a.turns}</td>
+            <td class="num">${a.projects}</td>
+          </tr>`,
+    )
+    .join('\n');
+
+  return `  <section>
+    <h2>Which agents did the work</h2>
+    <p class="sub">Working time per agent · wall clock is that agent's own union, so two agents running at once make the columns sum past the elapsed time</p>
+    <figure>${hBarChart(items, { labelWidth: 120, valueWidth: 84, axisFormat: (v) => duration(v) })}</figure>
+    <div class="tablewrap" style="margin-top:8px">
+      <table>
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th style="text-align:right">Working</th>
+            <th style="text-align:right">Wall clock</th>
+            <th style="text-align:right">Sessions</th>
+            <th style="text-align:right">Turns</th>
+            <th style="text-align:right">Projects</th>
+          </tr>
+        </thead>
         <tbody>
 ${rows}
         </tbody>
@@ -936,6 +1046,10 @@ const MAX_TIMELINE_DAYS = 45;
 function timelineSection(stats: Stats, anon: Anonymizer, initialZoom: HourRange | null): string {
   if (stats.timeline.length === 0) return '';
 
+  // Tag lanes by agent only when the report actually mixes them; a single-agent
+  // report would otherwise repeat the same word on every row.
+  const multi = stats.agents.length > 1;
+
   // Newest day first — the recent past is what gets looked at.
   const days = [...stats.timeline].reverse().slice(0, MAX_TIMELINE_DAYS);
 
@@ -980,13 +1094,17 @@ ${presets
         const names = interval.projects.map((p) => anon.projectLabel(p));
         const shown = names.slice(0, 3).join(', ');
         const more = names.length > 3 ? ` +${names.length - 3} more` : '';
+        const who =
+          multi && interval.agents.length > 0
+            ? ` · ${interval.agents.map((a) => agentName(a)).join(' + ')}`
+            : '';
         return {
           from: frac(interval.start),
           to: frac(interval.end),
           level: interval.level,
           title: `${clockTime(interval.start)}–${clockTime(interval.end)} · ${interval.level} agent${
             interval.level === 1 ? '' : 's'
-          } working · ${duration(interval.end - interval.start)}${shown ? ` · ${shown}` : ''}${more}`,
+          } working${who} · ${duration(interval.end - interval.start)}${shown ? ` · ${shown}` : ''}${more}`,
         };
       });
 
@@ -1006,9 +1124,10 @@ ${presets
             // most of the report's weight.
             title: `${clockTime(span.start)}–${clockTime(span.end)} · ${duration(span.end - span.start)}`,
           }));
+          const tag = multi ? agentTag(lane.agent) : '';
           return `        <div class="tl-row tl-lane">
-          <span class="tl-name" title="${esc(project)}">${esc(truncate(name, 26))}</span>
-          ${timelineTrack(bars, `${name}, ${duration(lane.activeMs)}`)}
+          <span class="tl-name" title="${esc(project)}">${tag}${esc(truncate(name, 26))}</span>
+          ${timelineTrack(bars, `${multi ? `${agentName(lane.agent)}, ` : ''}${name}, ${duration(lane.activeMs)}`)}
           <span class="tl-total">${esc(duration(lane.activeMs))}</span>
         </div>`;
         })
@@ -1065,7 +1184,7 @@ ${laneRows}
     }</p>
     <figure>
 ${zoomBar}
-      <div class="tl" data-tl${initialZoom ? ` data-from="${initialZoom.from}" data-to="${initialZoom.to}"` : ''}>
+      <div class="tl${multi ? ' multi' : ''}" data-tl${initialZoom ? ` data-from="${initialZoom.from}" data-to="${initialZoom.to}"` : ''}>
         <div class="tl-row tl-axis"><span class="tl-name"></span><span class="tl-track tl-ticks">${axis}</span><span class="tl-total"></span></div>
 ${rows}
       </div>
@@ -1182,13 +1301,14 @@ function sessionSection(stats: Stats, anon: Anonymizer): string {
   const withWork = stats.sessions.filter((s) => s.activeMs > 0).slice(0, 40);
   if (withWork.length === 0) return '';
 
+  const multi = stats.agents.length > 1;
   const rows = withWork
     .map((s) => {
       const lifetime = s.endedAt - s.startedAt;
       const ratio = lifetime > 0 ? (100 * s.activeMs) / lifetime : 0;
       return `          <tr>
             <td class="name">${esc(truncate(anon.session(s.label, s.sessionId), 34))}</td>
-            <td class="dim">${esc(truncate(anon.projectLabel(s.project), 24))}</td>
+${multi ? `            <td>${agentTag(s.agent)}</td>\n` : ''}            <td class="dim">${esc(truncate(anon.projectLabel(s.project), 24))}</td>
             <td class="num">${esc(duration(s.activeMs))}</td>
             <td class="num">${esc(duration(lifetime))}</td>
             <td class="num">${ratio < 1 ? '&lt;1' : Math.round(ratio)}%</td>
@@ -1207,7 +1327,7 @@ function sessionSection(stats: Stats, anon: Anonymizer): string {
       <table>
         <thead>
           <tr>
-            <th>Session</th><th>Project</th>
+            <th>Session</th>${multi ? '<th>Agent</th>' : ''}<th>Project</th>
             <th style="text-align:right">Working</th>
             <th style="text-align:right">Lifetime</th>
             <th style="text-align:right">Busy</th>
@@ -1227,6 +1347,28 @@ export function renderReport(input: ReportInput): string {
   const { stats, live, anon, windowLabel, generatedAt } = input;
   const { summary } = stats;
 
+  // The report names the agents it actually covers. A page headed "Claude Code"
+  // that also charts Codex work would misreport its own scope.
+  const contributed = stats.agents.map((a) => agentName(a.agent));
+  const heading =
+    contributed.length === 0
+      ? 'Coding agent sessions'
+      : contributed.length === 1
+        ? `${contributed[0]} sessions`
+        : `${contributed.slice(0, -1).join(', ')} and ${contributed[contributed.length - 1]} sessions`;
+
+  // Source roots sit under $HOME and so carry the username. Fold it back to `~`,
+  // and drop the paths entirely when the report is being anonymised for sharing.
+  const home = homedir();
+  const sourceList = anon.enabled
+    ? input.sources.map((s) => s.name).join(' · ')
+    : input.sources
+        .map(
+          (s) =>
+            `${s.name} (${s.root.startsWith(home) ? `~${s.root.slice(home.length)}` : s.root})`,
+        )
+        .join(' · ');
+
   const tiles = [
     // Count only projects that actually accrued working time — most sessions in a
     // long window are one-prompt shells in their own directory, and counting those
@@ -1242,16 +1384,24 @@ export function renderReport(input: ReportInput): string {
     tile('Wall clock', duration(summary.coveredMs), 'time with ≥1 agent working'),
     tile('Parallelism', `${summary.parallelism.toFixed(2)}×`, 'work done per hour elapsed'),
     tile('Peak', String(summary.peakConcurrency), 'most agents at once'),
-  ].join('\n');
+  ];
+  if (summary.agents > 1) {
+    tiles.push(tile('Agents', String(summary.agents), contributed.join(' · ')));
+  }
 
   const notes: string[] = [];
   if (summary.sessionsWithoutTurnData > 0) {
     notes.push(
-      `<div class="note"><strong>${summary.sessionsWithoutTurnData}</strong> of these sessions predate Claude Code 2.1.222, which introduced the per-turn duration record. They are counted as sessions but contribute no working time — an absent number rather than an estimated one.</div>`,
+      `<div class="note"><strong>${summary.sessionsWithoutTurnData}</strong> of these sessions come from agent versions that record no per-turn duration — Claude Code before 2.1.222, or a Codex rollout predating the turn-completion event. They are counted as sessions but contribute no working time: an absent number rather than an estimated one.</div>`,
+    );
+  }
+  if (summary.agents > 1) {
+    notes.push(
+      `<div class="note">Concurrency is counted per <strong>session</strong>, not per agent. A Claude Code session and a Codex session working at the same moment count as two; a single session running five subagents still counts as one.</div>`,
     );
   }
   notes.push(
-    `<div class="note">Historical <strong>waiting</strong> time is not shown because it cannot be recovered: nothing in a transcript distinguishes a permission prompt from a coffee break. Waiting appears in <strong>Right now</strong> only.</div>`,
+    `<div class="note">Historical <strong>waiting</strong> time is not shown because it cannot be recovered: nothing in a session file distinguishes a permission prompt from a coffee break. Waiting appears in <strong>Right now</strong> only, and only for agents that publish it.</div>`,
   );
 
   const body = [
@@ -1260,9 +1410,10 @@ export function renderReport(input: ReportInput): string {
     <h2>${esc(windowLabel)}</h2>
     <p class="sub">${summary.windowFrom > 0 ? `${esc(shortDate(summary.windowFrom))} – ${esc(shortDate(summary.windowTo))}` : 'no activity recorded'}</p>
     <div class="tiles">
-${tiles}
+${tiles.join('\n')}
     </div>
   </section>`,
+    agentSection(stats),
     timelineSection(stats, anon, input.zoom ?? null),
     hourlySection(stats),
     concurrencySection(stats),
@@ -1283,22 +1434,22 @@ ${notes.join('\n')}
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>agentclock — Claude Code session report</title>
+<title>agentclock — coding agent session report</title>
 <style>${STYLE}</style>
 </head>
 <body>
 <div class="wrap">
   <header class="top">
-    <h1>Claude Code sessions</h1>
+    <h1>${esc(heading)}</h1>
     <div class="meta">${esc(dateTime(generatedAt))}</div>
   </header>
 ${body}
   <script>window.__agentclockHours=${hourlyData(stats)};</script>
   <script>${SCRIPT}</script>
   <footer>
-    Generated by agentclock from ~/.claude · a session with N subagents counts once.<br>
-    Working time comes from Claude Code's own per-turn duration records, not from sampling or estimation.<br>
-    Claude Code deletes transcripts after 30 days, so this report covers only what remains on disk.
+    Generated by agentclock from ${esc(sourceList)} · a session with N subagents counts once.<br>
+    Working time comes from each agent's own per-turn duration records, not from sampling or estimation.<br>
+    Claude Code deletes transcripts after 30 days, so this report covers only what remains on disk plus what agentclock has already archived.
   </footer>
 </div>
 </body>

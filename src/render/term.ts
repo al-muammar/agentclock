@@ -1,3 +1,4 @@
+import { agentName, type AgentInfo, type LiveSnapshot } from '../agents/index.js';
 import { attribute, type Anonymizer } from '../project.js';
 import {
   FULL_DAY,
@@ -39,14 +40,34 @@ function statusStyle(status: string): (s: string) => string {
   return c.waiting; // unknown status: make it visible rather than silently grey
 }
 
+/**
+ * Agents that cannot report live state, phrased for the bottom of a live view.
+ *
+ * Always printed, even when nothing else is: a `now` that silently omits Codex
+ * would read as "no Codex sessions are running", which is a claim agentclock has no
+ * way to make.
+ */
+function blindNote(blind: LiveSnapshot['blind']): string {
+  if (blind.length === 0) return '';
+  return `  ${c.dim(blind.map((b) => `${b.name}: ${b.note}`).join(' · '))}\n`;
+}
+
 /** The live three-way split, plus one line per running session. */
-export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
+export function renderNow(snapshot: LiveSnapshot, anon: Anonymizer): string {
+  const { sessions, blind } = snapshot;
   const now = Date.now();
   const lines: string[] = [];
 
   if (sessions.length === 0) {
-    return `${c.dim('No Claude Code sessions are running.')}\n`;
+    const who =
+      blind.length > 0
+        ? 'No sessions are running in the agents that report state.'
+        : 'No agent sessions are running.';
+    return `\n  ${c.dim(who)}\n\n${blindNote(blind)}\n`;
   }
+
+  // Only worth a column when more than one agent could appear in it.
+  const multi = new Set(sessions.map((s) => s.agent)).size > 1 || blind.length > 0;
 
   const counts = new Map<string, number>();
   for (const s of sessions) counts.set(s.status, (counts.get(s.status) ?? 0) + 1);
@@ -83,10 +104,12 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
     26,
     Math.max(8, ...rows.map((s) => anon.projectLabel(attribute(s.cwd).project).length)),
   );
+  const agentWidth = multi ? Math.max(6, ...rows.map((s) => s.agent.length)) : 0;
+  const agentCell = (value: string) => (multi ? `  ${pad(value, agentWidth)}` : '');
 
   lines.push(
     c.dim(
-      `  ${pad('SESSION', nameWidth)}  ${pad('PROJECT', projWidth)}  ${pad('STATE', 9)}  ${padStart('UPTIME', 8)}`,
+      `  ${pad('SESSION', nameWidth)}${agentCell('AGENT')}  ${pad('PROJECT', projWidth)}  ${pad('STATE', 9)}  ${padStart('UPTIME', 8)}`,
     ),
   );
 
@@ -103,7 +126,7 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
     const marker = ACTIVE_STATUSES.has(s.status) ? '●' : s.status === 'waiting' ? '◐' : '○';
 
     lines.push(
-      `  ${style(marker)} ${pad(name, nameWidth - 2)}  ${c.dim(pad(project, projWidth))}  ${style(pad(state, 9))}  ${c.dim(padStart(uptime, 8))}`,
+      `  ${style(marker)} ${pad(name, nameWidth - 2)}${multi ? c.dim(agentCell(s.agent)) : ''}  ${c.dim(pad(project, projWidth))}  ${style(pad(state, 9))}  ${c.dim(padStart(uptime, 8))}`,
     );
 
     if (s.status === 'waiting' && s.waitingFor) {
@@ -111,6 +134,35 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
     }
   }
 
+  lines.push('');
+  const note = blindNote(blind);
+  if (note) lines.push(note.trimEnd(), '');
+  return lines.join('\n');
+}
+
+/** `agentclock agents` — what is installed, what is readable, what reports live state. */
+export function renderAgents(infos: AgentInfo[]): string {
+  const lines: string[] = [''];
+  const idWidth = Math.max(6, ...infos.map((i) => i.id.length));
+  const nameWidth = Math.max(6, ...infos.map((i) => i.name.length));
+
+  lines.push(
+    c.dim(`  ${pad('AGENT', idWidth)}  ${pad('NAME', nameWidth)}  ${pad('DATA', 9)}  LIVE`),
+  );
+
+  for (const info of infos) {
+    // Pad before colouring: escape codes have width in the string but not on screen.
+    const data = (info.present ? c.busy : c.idle)(pad(info.present ? 'found' : 'not found', 9));
+    const live = (info.live ? c.busy : c.idle)(info.live ? 'yes' : 'no');
+    lines.push(`  ${pad(info.id, idWidth)}  ${pad(info.name, nameWidth)}  ${data}  ${live}`);
+    lines.push(`  ${' '.repeat(idWidth)}  ${c.dim(info.root)}`);
+    if (!info.live && info.liveNote) {
+      lines.push(`  ${' '.repeat(idWidth)}  ${c.dim(info.liveNote)}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(c.dim('  Read one agent only with --agent <id>.'));
   lines.push('');
   return lines.join('\n');
 }
@@ -257,6 +309,21 @@ export function renderStats(stats: Stats, anon: Anonymizer, limit = 8): string {
   );
   lines.push('');
 
+  // Only when more than one agent contributed — a single-agent user should not have
+  // to read a breakdown that repeats the headline figure.
+  if (stats.agents.length > 1) {
+    lines.push(c.dim('  BY AGENT'));
+    const width = Math.max(...stats.agents.map((a) => agentName(a.agent).length));
+    const max = Math.max(...stats.agents.map((a) => a.activeMs), 1);
+    for (const agent of stats.agents) {
+      const bar = Math.max(1, Math.round((agent.activeMs / max) * 24));
+      lines.push(
+        `  ${pad(agentName(agent.agent), width)}  ${c.busy('█'.repeat(bar))}${' '.repeat(24 - bar)}  ${padStart(duration(agent.activeMs), 9)}  ${c.dim(`${agent.sessions} sessions · ${agent.turns} turns · ${agent.projects} projects`)}`,
+      );
+    }
+    lines.push('');
+  }
+
   if (stats.concurrency.length > 0) {
     lines.push(c.dim('  TIME AT EACH LEVEL OF SIMULTANEOUS WORK'));
     const max = Math.max(...stats.concurrency.map((b) => b.ms));
@@ -287,8 +354,8 @@ export function renderStats(stats: Stats, anon: Anonymizer, limit = 8): string {
   if (summary.sessionsWithoutTurnData > 0) {
     lines.push(
       c.dim(
-        `  ${summary.sessionsWithoutTurnData} session(s) predate Claude Code 2.1.222 and record no turn\n` +
-          `  durations; they are counted but contribute no active time.`,
+        `  ${summary.sessionsWithoutTurnData} session(s) come from agent versions that record no\n` +
+          `  per-turn durations; they are counted but contribute no active time.`,
       ),
     );
     lines.push('');
