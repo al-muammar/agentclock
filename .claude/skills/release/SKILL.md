@@ -144,15 +144,37 @@ gh release create v<X.Y.Z> --title "v<X.Y.Z>" --notes "<the changelog entry>"
 
 ## 10. Verify what actually shipped
 
-Do not report success from exit codes alone:
+Do not report success from exit codes alone. Verify the *tarball the registry
+is serving*, not the checkout it came from — those are the same bytes only if
+the publish went out from the tagged tree:
 
 ```sh
-npm view agentclock version                    # must be <X.Y.Z>
-npx -y agentclock@<X.Y.Z> --version            # the published artifact, not the checkout
+npm view agentclock version                             # must be <X.Y.Z>
+npm pack agentclock@<X.Y.Z> && tar -xzf agentclock-<X.Y.Z>.tgz
+grep '"version"' package/package.json                   # must be <X.Y.Z>
+grep -o "VERSION = '[^']*'" package/dist/cli.js         # must be <X.Y.Z> too
 gh release view v<X.Y.Z> --json tagName,url
 ```
 
 Then report: version, npm URL, release URL, and anything you skipped.
+
+## 11. Tell the user how to upgrade, and warn about the cache
+
+**`npm install -g agentclock` run within a few minutes of the publish will
+install the previous version.** npm serves a cached packument, and a cache
+written seconds before the publish does not list the new version yet — the
+install succeeds, reports no error, and leaves the old build in place. This has
+already been mistaken for a failed release once. Tell them to run:
+
+```sh
+npm install -g agentclock@latest --prefer-online
+```
+
+If someone reports the old version after a release, check the install rather
+than the release: compare `npm view agentclock version` against
+`npm ls -g agentclock`, and check whether the global path is a symlink into a
+checkout — `npm run link:local` leaves one, and it shadows the published
+package entirely.
 
 ## Invariants
 
