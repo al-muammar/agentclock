@@ -138,7 +138,7 @@ Check the payload before sending it, because npm versions are immutable — a
 wrong publish can only be deprecated, never replaced:
 
 ```sh
-npm pack --dry-run                  # dist/ + bin/ + README + LICENSE, nothing else
+npm pack --dry-run                  # dist/ + bin/ + macos/ + README + LICENSE
 npm publish                         # prepublishOnly re-runs check + typecheck + test
 ```
 
@@ -174,8 +174,15 @@ npm view agentclock version                             # must be <X.Y.Z>
 npm pack agentclock@<X.Y.Z> && tar -xzf agentclock-<X.Y.Z>.tgz
 grep '"version"' package/package.json                   # must be <X.Y.Z>
 grep -o "VERSION = '[^']*'" package/dist/cli.js         # must be <X.Y.Z> too
+grep -A1 CFBundleShortVersionString package/macos/Info.plist   # and here
+ls package/macos                                        # source only, never build/
 gh release view v<X.Y.Z> --json tagName,url
 ```
+
+`ls package/macos` is not busywork: `files` naming a directory overrides
+`.gitignore`, so a compiled `macos/build/` can slip into the tarball and undo
+the reason the app is shipped as source at all. `test/menubar.test.js` asserts
+this too, but check the published bytes.
 
 Then report: version, npm URL, release URL, and anything you skipped.
 
