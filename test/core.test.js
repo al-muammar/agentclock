@@ -111,8 +111,8 @@ test('touching spans across sessions do not read as overlap', () => {
 });
 
 test('attribute folds a worktree back to its repo', () => {
-  assert.deepEqual(attribute('/Users/me/dev/mytravel/.claude/worktrees/more-tests'), {
-    project: '/Users/me/dev/mytravel',
+  assert.deepEqual(attribute('/Users/me/dev/checkout/.claude/worktrees/more-tests'), {
+    project: '/Users/me/dev/checkout',
     label: 'more-tests',
   });
 });
