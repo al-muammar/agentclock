@@ -1,5 +1,6 @@
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
 
 const { parseArgs, VERSION } = await import('../dist/cli.js');
 
@@ -73,4 +74,12 @@ test('an unknown option is not mistaken for a command', () => {
 
 test('version is a semver string', () => {
   assert.match(VERSION, /^\d+\.\d+\.\d+$/);
+});
+
+// The CLI carries its own version rather than reading package.json, which keeps
+// the manifest out of the bundle. The cost is that a release has to bump two
+// files, so a half-done bump must fail here and not on a user's machine.
+test('version matches package.json', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(VERSION, manifest.version);
 });
