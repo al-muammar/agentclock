@@ -1,4 +1,4 @@
-# cctrack
+# agentclock
 
 A CLI that reports how many Claude Code sessions ran, how many were actually
 working, and for how long. It reads files Claude Code already writes — there is
@@ -19,7 +19,7 @@ registry.ts     ~/.claude/sessions/<pid>.json   → live state
 transcripts.ts  ~/.claude/projects/**/*.jsonl   → historical spans
 spans.ts        merge / clip
 stats.ts        spans → concurrency, days, projects, timeline
-archive.ts      ~/.cctrack/archive.jsonl        → history past Claude's 30-day sweep
+archive.ts      ~/.agentclock/archive.jsonl        → history past Claude's 30-day sweep
 render/         term.ts (ANSI) · html.ts + svg.ts (self-contained report)
 ```
 
@@ -44,7 +44,7 @@ intervals when a session was working.
   than showing a phantom one. See the `ps -o etime=` check in `registry.ts` —
   the earlier `lstart` version silently reported zero sessions.
 - **Zero runtime dependencies.** devDependencies only. This is what makes
-  `npx cctrack` start in under a second; adding a dep needs a real reason.
+  `npx agentclock` start in under a second; adding a dep needs a real reason.
 - **The HTML report stays self-contained.** No network, no external assets — it
   is handed around as a single file and must render identically offline. Script
   is allowed but only inline, and only where markup genuinely cannot do the job:

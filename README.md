@@ -1,21 +1,21 @@
-# cctrack
+# agentclock
 
 See how many Claude Code sessions you're running, how many are **actually working**,
 and how long each one lives.
 
 ```sh
-npx cctrack
+npx agentclock
 ```
 
-No daemon, no install, nothing running in the background. cctrack reads what Claude
+No daemon, no install, nothing running in the background. agentclock reads what Claude
 Code has already written to disk and derives the rest.
 
 ## Install
 
-`npx cctrack` needs no install at all. To keep it around:
+`npx agentclock` needs no install at all. To keep it around:
 
 ```sh
-npm install -g cctrack
+npm install -g agentclock
 ```
 
 Node 18.17+, and no runtime dependencies — the install is one package.
@@ -24,7 +24,7 @@ Node 18.17+, and no runtime dependencies — the install is one package.
 
 Claude Code knows what your sessions are doing, but it doesn't keep a record. The
 live status of each session vanishes when the session exits, and transcripts are
-deleted after 30 days. cctrack turns what's on disk into an answer:
+deleted after 30 days. agentclock turns what's on disk into an answer:
 
 - How many sessions are open right now, and how many are working versus waiting on you
 - How much of your day had an agent actually running
@@ -38,15 +38,15 @@ being a rule the tool applies.
 ## Usage
 
 ```sh
-cctrack                # build the dashboard and open it
-cctrack now            # what's running right now
-cctrack watch          # live view, refreshing in place
-cctrack timeline       # per-day activity timeline
-cctrack stats          # historical summary in the terminal
-cctrack report --since 7d --anonymize -o week.html
+agentclock                # build the dashboard and open it
+agentclock now            # what's running right now
+agentclock watch          # live view, refreshing in place
+agentclock timeline       # per-day activity timeline
+agentclock stats          # historical summary in the terminal
+agentclock report --since 7d --anonymize -o week.html
 ```
 
-`cctrack timeline` shows one row per day, midnight to midnight, so you can see
+`agentclock timeline` shows one row per day, midnight to midnight, so you can see
 *when* agents were working rather than just how long:
 
 ```
@@ -82,7 +82,7 @@ renders and days still expand.
 | `--no-open` | Write the dashboard without opening it. |
 | `--hours <range>` | Zoom the timeline to a slice of the day: `9-18`, `09:30-13:00`. |
 | `--interval <seconds>` | Refresh rate for `watch`. Default `2`. |
-| `--no-archive` | Don't read or update `~/.cctrack/archive.jsonl`. |
+| `--no-archive` | Don't read or update `~/.agentclock/archive.jsonl`. |
 | `--json` | Machine-readable output. |
 | `--verbose` | Report parse throughput. |
 
@@ -109,7 +109,7 @@ before `JSON.parse` means ~99% of lines are never parsed.
 ### History outlives Claude's cleanup
 
 Claude Code deletes transcripts after `cleanupPeriodDays` (default 30). Each run
-records what it parsed to `~/.cctrack/archive.jsonl`, so sessions stay counted after
+records what it parsed to `~/.agentclock/archive.jsonl`, so sessions stay counted after
 their transcripts are gone — and unchanged transcripts are skipped next time.
 
 ```
@@ -123,7 +123,7 @@ A few hundred KB for a year of sessions. Disable with `--no-archive`.
 
 - **Historical `waiting` isn't recoverable.** Nothing in a transcript distinguishes
   "blocked on a permission prompt" from "went to lunch". `waiting` appears in
-  `cctrack now` and `cctrack watch`, but historical charts show busy and idle only.
+  `agentclock now` and `agentclock watch`, but historical charts show busy and idle only.
 - **Sessions older than Claude Code 2.1.222 record no turn durations.** They're
   counted, but contribute no active time rather than a fabricated estimate. (An
   earlier draft estimated it from gaps between records; measured against ground
@@ -132,6 +132,11 @@ A few hundred KB for a year of sessions. Disable with `--no-archive`.
 ## Requirements
 
 Node 18.17+. Reads `CLAUDE_CONFIG_DIR` if you've relocated your Claude config.
+
+Today agentclock reads Claude Code's data and nothing else. The name is deliberately
+tool-neutral: the model it's built on — sessions, spans of real work, one count per
+session regardless of subagents — isn't specific to Claude Code, so other agent CLIs
+can be added as readers without reshaping anything downstream.
 
 Nothing is sent anywhere. Everything stays on your machine.
 

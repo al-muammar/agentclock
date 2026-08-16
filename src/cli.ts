@@ -22,16 +22,16 @@ import { scanTranscripts } from './transcripts.js';
 export const VERSION = '0.1.0';
 
 const HELP = `
-  cctrack — how many Claude Code sessions you run, and how many are working
+  agentclock — how many Claude Code sessions you run, and how many are working
 
   Usage
-    cctrack                 Build the dashboard and open it
-    cctrack now             What is running right now
-    cctrack timeline        Per-day activity timeline
-    cctrack watch           Live view, refreshing in place
-    cctrack stats           Historical summary in the terminal
-    cctrack report          Build the dashboard
-    cctrack --help
+    agentclock                 Build the dashboard and open it
+    agentclock now             What is running right now
+    agentclock timeline        Per-day activity timeline
+    agentclock watch           Live view, refreshing in place
+    agentclock stats           Historical summary in the terminal
+    agentclock report          Build the dashboard
+    agentclock --help
 
   Options
     --since <window>        Time window: 7d, 24h, 90m  (default 30d)
@@ -41,15 +41,15 @@ const HELP = `
     --no-open               Write the dashboard without opening it
     --hours <range>         Zoom the timeline: 9-18, 09:30-13:00
     --interval <seconds>    Refresh rate for watch  (default 2)
-    --no-archive            Do not read or update ~/.cctrack/archive.jsonl
+    --no-archive            Do not read or update ~/.agentclock/archive.jsonl
     --json                  Machine-readable output
     --verbose               Report parse throughput
     --version
 
   Notes
     Subagents are part of their parent session and are never counted separately.
-    Claude Code deletes transcripts after 30 days; cctrack keeps what it has
-    already seen in ~/.cctrack/archive.jsonl, so history outlives the sweep.
+    Claude Code deletes transcripts after 30 days; agentclock keeps what it has
+    already seen in ~/.agentclock/archive.jsonl, so history outlives the sweep.
 `;
 
 interface Options {
@@ -358,7 +358,7 @@ export async function run(argv: string[]): Promise<number> {
 
   const { options, error } = parseArgs(argv);
   if (error) {
-    process.stderr.write(`  ${error}\n\n  Run cctrack --help for usage.\n\n`);
+    process.stderr.write(`  ${error}\n\n  Run agentclock --help for usage.\n\n`);
     return 2;
   }
 
@@ -375,7 +375,7 @@ export async function run(argv: string[]): Promise<number> {
       return commandWatch(options);
     default:
       process.stderr.write(
-        `  Unknown command: ${options.command}\n\n  Run cctrack --help for usage.\n\n`,
+        `  Unknown command: ${options.command}\n\n  Run agentclock --help for usage.\n\n`,
       );
       return 2;
   }

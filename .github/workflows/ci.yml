@@ -48,5 +48,5 @@ jobs:
       # A clean machine has no ~/.claude at all: the CLI must say so, not crash.
       - name: Runs with no Claude data
         run: |
-          node bin/cctrack.js now
-          node bin/cctrack.js stats
+          node bin/agentclock.js now
+          node bin/agentclock.js stats

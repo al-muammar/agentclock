@@ -24,18 +24,18 @@ export function sessionsDir(): string {
   return path.join(claudeRoot(), 'sessions');
 }
 
-/** Where cctrack keeps its own accumulated history. */
-export function cctrackDir(): string {
-  const override = process.env['CCTRACK_DIR'];
+/** Where agentclock keeps its own accumulated history. */
+export function agentclockDir(): string {
+  const override = process.env['AGENTCLOCK_DIR'];
   if (override?.trim()) return path.resolve(override.trim());
-  return path.join(homedir(), '.cctrack');
+  return path.join(homedir(), '.agentclock');
 }
 
 export function archivePath(): string {
-  return path.join(cctrackDir(), 'archive.jsonl');
+  return path.join(agentclockDir(), 'archive.jsonl');
 }
 
 /** Default output location for the dashboard. */
 export function defaultReportPath(): string {
-  return path.join(cctrackDir(), 'dashboard.html');
+  return path.join(agentclockDir(), 'dashboard.html');
 }
