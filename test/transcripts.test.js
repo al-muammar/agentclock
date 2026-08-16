@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const root = await mkdtemp(path.join(tmpdir(), 'cctrack-tx-'));
+const root = await mkdtemp(path.join(tmpdir(), 'agentclock-tx-'));
 process.env.CLAUDE_CONFIG_DIR = root;
 
 const { parseTranscript, listTranscripts, scanTranscripts } = await import(

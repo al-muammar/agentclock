@@ -388,9 +388,9 @@ test('the report ships the hourly data and a day selector', () => {
   assert.match(html, /Hourly distribution/);
   assert.match(html, /data-hz-day/);
   assert.match(html, /data-hz-metric="peak"/);
-  assert.match(html, /window\.__cctrackHours=/);
+  assert.match(html, /window\.__agentclockHours=/);
   // The embedded JSON must not be able to close the script block early.
-  const payload = /window\.__cctrackHours=(.*?);<\/script>/s.exec(html);
+  const payload = /window\.__agentclockHours=(.*?);<\/script>/s.exec(html);
   assert.ok(payload, 'hourly payload present');
   assert.ok(!payload[1].includes('</'), 'payload must not contain a closing tag');
   assert.doesNotThrow(() => JSON.parse(payload[1].replace(/\\u003c/g, '<')));

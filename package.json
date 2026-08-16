@@ -1,5 +1,5 @@
 {
-  "name": "cctrack",
+  "name": "agentclock",
   "version": "0.1.0",
   "description": "See how many Claude Code sessions you run, how many are actually working, and how long they live.",
   "keywords": [
@@ -10,17 +10,17 @@
     "stats",
     "cli"
   ],
-  "homepage": "https://github.com/al-muammar/cctrack#readme",
-  "bugs": "https://github.com/al-muammar/cctrack/issues",
+  "homepage": "https://github.com/al-muammar/agentclock#readme",
+  "bugs": "https://github.com/al-muammar/agentclock/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/al-muammar/cctrack.git"
+    "url": "git+https://github.com/al-muammar/agentclock.git"
   },
   "license": "MIT",
   "author": "al-muammar",
   "type": "module",
   "bin": {
-    "cctrack": "bin/cctrack.js"
+    "agentclock": "bin/agentclock.js"
   },
   "files": [
     "bin",
@@ -43,7 +43,7 @@
     "check:fix": "biome check --write",
     "pretest": "npm run build",
     "test": "node --test test/*.test.js",
-    "start": "npm run build && node bin/cctrack.js"
+    "start": "npm run build && node bin/agentclock.js"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",

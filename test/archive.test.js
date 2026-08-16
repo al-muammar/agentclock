@@ -4,8 +4,8 @@ import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const dir = await mkdtemp(path.join(tmpdir(), 'cctrack-test-'));
-process.env.CCTRACK_DIR = dir;
+const dir = await mkdtemp(path.join(tmpdir(), 'agentclock-test-'));
+process.env.AGENTCLOCK_DIR = dir;
 
 const { loadArchive, saveArchive, mergeArchive, emptyArchive } = await import('../dist/archive.js');
 const { archivePath } = await import('../dist/paths.js');
@@ -145,8 +145,8 @@ test('--interval takes seconds and rejects nonsense', async () => {
   assert.match(parseArgs(['--interval', '-3']).error ?? '', /number of seconds/i);
 });
 
-test('CCTRACK_DIR relocates the archive', async () => {
-  assert.ok(archivePath().startsWith(dir), 'archive must follow CCTRACK_DIR');
+test('AGENTCLOCK_DIR relocates the archive', async () => {
+  assert.ok(archivePath().startsWith(dir), 'archive must follow AGENTCLOCK_DIR');
 });
 
 test('cleanup', async () => {

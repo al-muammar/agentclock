@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { archivePath, cctrackDir } from './paths.js';
+import { archivePath, agentclockDir } from './paths.js';
 import type { SessionRecord, Span } from './types.js';
 
 /**
@@ -140,7 +140,7 @@ export function mergeArchive(archive: Archive, fresh: SessionRecord[]): SessionR
  * existing archive.
  */
 export async function saveArchive(records: SessionRecord[]): Promise<void> {
-  const dir = cctrackDir();
+  const dir = agentclockDir();
   await mkdir(dir, { recursive: true });
 
   const body = records
