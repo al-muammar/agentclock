@@ -22,10 +22,13 @@ it. Delete a linked worktree without unlinking and `agentclock` dangles.
 `.claude/skills/release/SKILL.md` is the whole procedure: bump, changelog,
 release PR, CI, tag the merged commit, publish, GitHub Release. Two things it
 exists to stop you forgetting — the version lives in **`package.json`,
-`package-lock.json` and `src/cli.ts`** and all three must agree (`--version`
-reads the constant, not the manifest, so the manifest stays out of the bundle;
-`test/cli.test.js` fails a half-done bump), and the tag goes on the **merged**
-commit, never a local one, so it can only ever name a tree CI went green on.
+`package-lock.json`, `src/cli.ts` and `macos/Info.plist`** and all four must
+agree (`--version` reads the constant, not the manifest, so the manifest stays
+out of the bundle; the plist carries it twice and is the easy one to miss, since
+a stale value still builds and runs. `test/cli.test.js` and
+`test/menubar.test.js` fail a half-done bump), and the tag goes on the
+**merged** commit, never a local one, so it can only ever name a tree CI went
+green on.
 
 ## Shape
 

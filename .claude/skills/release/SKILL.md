@@ -41,9 +41,16 @@ Read the commits. If the set is empty, there is nothing to release — say so an
 stop. If it contains something the user did not expect to ship, surface it
 before going further.
 
-## 3. Bump the version in both places
+## 3. Bump the version in all four places
 
-The version lives in **two** files and they must agree:
+The version lives in **four** files and they must all agree:
+
+| File | How |
+| --- | --- |
+| `package.json` | `npm version` |
+| `package-lock.json` | `npm version` |
+| `src/cli.ts` | by hand |
+| `macos/Info.plist` | by hand — **two** keys |
 
 ```sh
 npm version <X.Y.Z> --no-git-tag-version    # package.json + package-lock.json
@@ -52,8 +59,22 @@ npm version <X.Y.Z> --no-git-tag-version    # package.json + package-lock.json
 Then edit `src/cli.ts` — `export const VERSION = '<X.Y.Z>'` — because
 `agentclock --version` reads that constant, not `package.json` (keeping the
 package out of the bundle is what lets the CLI start with zero runtime
-dependencies). `test/cli.test.js` asserts the two match, so a half-done bump
-fails the test run in step 5 rather than shipping a CLI that lies about itself.
+dependencies). `test/cli.test.js` asserts those two match.
+
+Then edit `macos/Info.plist`, which carries the version **twice**:
+`CFBundleShortVersionString` and `CFBundleVersion`. This one is easy to forget
+because nothing about the CLI touches it and a stale value still builds and
+runs — it just ships a menu bar app that misreports itself in Finder and in its
+own bundle metadata. `test/menubar.test.js` asserts both keys against
+`package.json`, so a half-done bump fails the test run in step 5 rather than
+shipping.
+
+Confirm all four before moving on — the check is one command:
+
+```sh
+grep -rn "$(node -p "require('./package.json').version")" \
+  package.json package-lock.json src/cli.ts macos/Info.plist
+```
 
 `--no-git-tag-version` is deliberate: this skill tags the *merged* commit in
 step 7, not the local one, so the tag can never point at a tree that CI never
@@ -117,7 +138,7 @@ Check the payload before sending it, because npm versions are immutable — a
 wrong publish can only be deprecated, never replaced:
 
 ```sh
-npm pack --dry-run                  # dist/ + bin/ + README + LICENSE, nothing else
+npm pack --dry-run                  # dist/ + bin/ + macos/ + README + LICENSE
 npm publish                         # prepublishOnly re-runs check + typecheck + test
 ```
 
@@ -153,8 +174,15 @@ npm view agentclock version                             # must be <X.Y.Z>
 npm pack agentclock@<X.Y.Z> && tar -xzf agentclock-<X.Y.Z>.tgz
 grep '"version"' package/package.json                   # must be <X.Y.Z>
 grep -o "VERSION = '[^']*'" package/dist/cli.js         # must be <X.Y.Z> too
+grep -A1 CFBundleShortVersionString package/macos/Info.plist   # and here
+ls package/macos                                        # source only, never build/
 gh release view v<X.Y.Z> --json tagName,url
 ```
+
+`ls package/macos` is not busywork: `files` naming a directory overrides
+`.gitignore`, so a compiled `macos/build/` can slip into the tarball and undo
+the reason the app is shipped as source at all. `test/menubar.test.js` asserts
+this too, but check the published bytes.
 
 Then report: version, npm URL, release URL, and anything you skipped.
 
@@ -180,8 +208,10 @@ package entirely.
 
 - **Never publish an untagged tree, never tag an unmerged one.** Both have
   happened here; both make "which commit is 0.1.0?" unanswerable.
-- **`package.json`, `package-lock.json`, and `src/cli.ts` carry the same
-  version.** Three files, one number.
+- **`package.json`, `package-lock.json`, `src/cli.ts` and `macos/Info.plist`
+  carry the same version.** Four files, five occurrences, one number — the
+  plist has two keys. Adding a fifth home for the version means adding a test
+  that pins it, in the same commit.
 - **Zero runtime dependencies is a release-blocking check.** If `dependencies`
   in `package.json` is non-empty, stop and ask — `npx agentclock` starting in
   under a second is the reason it is empty.
