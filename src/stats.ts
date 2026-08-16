@@ -3,8 +3,10 @@ import type { SessionRecord, Span } from './types.js';
 
 export interface Summary {
   sessions: number;
-  /** Sessions old enough to predate the turn_duration record (Claude Code < 2.1.222). */
+  /** Sessions whose agent recorded no per-turn timing at all. */
   sessionsWithoutTurnData: number;
+  /** How many distinct agents contributed a session. */
+  agents: number;
   projects: number;
   turns: number;
   prompts: number;
@@ -41,6 +43,21 @@ export interface ProjectBucket {
   activeMs: number;
   sessions: number;
   turns: number;
+  /** Which agents worked on this project, busiest first. */
+  agents: string[];
+}
+
+/** One agent's contribution to the window. */
+export interface AgentBucket {
+  agent: string;
+  activeMs: number;
+  coveredMs: number;
+  sessions: number;
+  turns: number;
+  prompts: number;
+  projects: number;
+  /** Sessions from this agent that carry no per-turn timing. */
+  sessionsWithoutTurnData: number;
 }
 
 /** One day's worth of activity, positioned within the day. */
@@ -95,6 +112,7 @@ function emptyHours(): HourBucket[] {
 /** One session's working time within a single day — a lane in the expanded view. */
 export interface TimelineLane {
   sessionId: string;
+  agent: string;
   label: string;
   project: string;
   activeMs: number;
@@ -125,6 +143,8 @@ export interface Stats {
   concurrency: ConcurrencyBucket[];
   days: DayBucket[];
   projects: ProjectBucket[];
+  /** Per-agent totals, busiest first. */
+  agents: AgentBucket[];
   sessions: SessionRecord[];
   timeline: TimelineDay[];
   /** Hourly distribution across every day in the window. */
@@ -160,6 +180,7 @@ export function buildTimeline(
         end: boundary,
         level: interval.level,
         projects: interval.projects,
+        agents: interval.agents,
       });
       cursor = boundary;
     }
@@ -191,6 +212,7 @@ export function buildTimeline(
       }
       lanes.push({
         sessionId: session.sessionId,
+        agent: session.agent,
         label: session.label,
         project: session.project,
         activeMs: totalMs(spans),
@@ -315,10 +337,12 @@ function splitByDay(span: Span): Array<{ day: string; ms: number; at: number }> 
 export interface Interval {
   start: number;
   end: number;
-  /** How many sessions were working — always equal to `projects.length`. */
+  /** How many sessions were working. Never fewer than `projects.length`. */
   level: number;
   /** Which projects were working, for the timeline tooltip. */
   projects: string[];
+  /** Which agents were working, for the same tooltip. */
+  agents: string[];
 }
 
 export interface ConcurrencyProfile {
@@ -333,11 +357,14 @@ export interface ConcurrencyProfile {
 }
 
 export function concurrencyProfile(sessions: SessionRecord[]): ConcurrencyProfile {
-  const byId = new Map(sessions.map((s) => [s.sessionId, s]));
+  // Keyed by agent and id together: two agents mint session ids independently, and
+  // a collision would let one session cancel out another's open event.
+  const key = (s: { agent: string; sessionId: string }) => `${s.agent}:${s.sessionId}`;
+  const byId = new Map(sessions.map((s) => [key(s), s]));
   const events: Array<[number, number, string]> = [];
   for (const s of sessions) {
     for (const span of s.spans) {
-      events.push([span.start, 1, s.sessionId], [span.end, -1, s.sessionId]);
+      events.push([span.start, 1, key(s)], [span.end, -1, key(s)]);
     }
   }
   if (events.length === 0) {
@@ -365,13 +392,16 @@ export function concurrencyProfile(sessions: SessionRecord[]): ConcurrencyProfil
   let peakAt = events[0]![0];
   let prev = events[0]![0];
 
-  const projectsOf = (): string[] => {
-    const names = new Set<string>();
+  const workingNow = (): { projects: string[]; agents: string[] } => {
+    const projects = new Set<string>();
+    const agents = new Set<string>();
     for (const id of active.keys()) {
       const session = byId.get(id);
-      if (session) names.add(session.project);
+      if (!session) continue;
+      projects.add(session.project);
+      agents.add(session.agent);
     }
-    return [...names];
+    return { projects: [...projects], agents: [...agents] };
   };
 
   for (const [t, delta, sessionId] of events) {
@@ -390,7 +420,7 @@ export function concurrencyProfile(sessions: SessionRecord[]): ConcurrencyProfil
       if (last && last.end === prev && last.level === level) {
         last.end = t; // extend rather than emit a second rect at the same level
       } else {
-        intervals.push({ start: prev, end: t, level, projects: projectsOf() });
+        intervals.push({ start: prev, end: t, level, ...workingNow() });
       }
     }
 
@@ -416,6 +446,54 @@ export function concurrencyProfile(sessions: SessionRecord[]): ConcurrencyProfil
 
   const coveredMs = buckets.reduce((sum, b) => sum + b.ms, 0);
   return { buckets, peak, peakAt, coveredMs, dayPeaks, intervals };
+}
+
+/**
+ * Split the window by agent.
+ *
+ * `coveredMs` is the union of one agent's spans, so it answers "how much wall clock
+ * had this agent working" — summing the per-agent covered times therefore exceeds
+ * the overall `coveredMs` whenever two agents ran at the same moment, which is the
+ * whole point of measuring them separately.
+ */
+export function agentBuckets(sessions: SessionRecord[]): AgentBucket[] {
+  const byAgent = new Map<string, SessionRecord[]>();
+  for (const s of sessions) {
+    let list = byAgent.get(s.agent);
+    if (!list) {
+      list = [];
+      byAgent.set(s.agent, list);
+    }
+    list.push(s);
+  }
+
+  const buckets: AgentBucket[] = [];
+  for (const [agent, group] of byAgent) {
+    const projects = new Set<string>();
+    let activeMs = 0;
+    let turns = 0;
+    let prompts = 0;
+    let withoutTurnData = 0;
+    for (const s of group) {
+      projects.add(s.project);
+      activeMs += s.activeMs;
+      turns += s.turns;
+      prompts += s.prompts;
+      if (!s.hasTurnData) withoutTurnData += 1;
+    }
+    buckets.push({
+      agent,
+      activeMs,
+      coveredMs: totalMs(mergeSpans(group.flatMap((s) => s.spans))),
+      sessions: group.length,
+      turns,
+      prompts,
+      projects: projects.size,
+      sessionsWithoutTurnData: withoutTurnData,
+    });
+  }
+
+  return buckets.sort((a, b) => b.activeMs - a.activeMs || a.agent.localeCompare(b.agent));
 }
 
 export function computeStats(
@@ -499,24 +577,41 @@ export function computeStats(
   const days = [...dayMap.values()].sort((a, b) => a.day.localeCompare(b.day));
 
   const projectMap = new Map<string, ProjectBucket>();
+  // Agent ordering inside a project is by that agent's time on it, so the label
+  // reads "claude, codex" when Claude did most of the work there.
+  const projectAgentMs = new Map<string, Map<string, number>>();
   for (const s of sessions) {
     let bucket = projectMap.get(s.project);
     if (!bucket) {
-      bucket = { project: s.project, activeMs: 0, sessions: 0, turns: 0 };
+      bucket = { project: s.project, activeMs: 0, sessions: 0, turns: 0, agents: [] };
       projectMap.set(s.project, bucket);
     }
     bucket.activeMs += s.activeMs;
     bucket.sessions += 1;
     bucket.turns += s.turns;
+
+    let perAgent = projectAgentMs.get(s.project);
+    if (!perAgent) {
+      perAgent = new Map();
+      projectAgentMs.set(s.project, perAgent);
+    }
+    perAgent.set(s.agent, (perAgent.get(s.agent) ?? 0) + s.activeMs);
+  }
+  for (const [project, perAgent] of projectAgentMs) {
+    projectMap.get(project)!.agents = [...perAgent.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([agent]) => agent);
   }
   const projects = [...projectMap.values()].sort((a, b) => b.activeMs - a.activeMs);
 
+  const agents = agentBuckets(sessions);
   const timeline = buildTimeline(intervals, days, sessions);
 
   return {
     summary: {
       sessions: sessions.length,
       sessionsWithoutTurnData: sessions.filter((s) => !s.hasTurnData).length,
+      agents: agents.length,
       projects: projects.length,
       turns,
       prompts,
@@ -533,6 +628,7 @@ export function computeStats(
     concurrency: buckets,
     days,
     projects,
+    agents,
     sessions,
     timeline,
     hourly: aggregateHours(timeline),

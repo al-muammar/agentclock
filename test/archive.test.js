@@ -7,10 +7,13 @@ import path from 'node:path';
 const dir = await mkdtemp(path.join(tmpdir(), 'agentclock-test-'));
 process.env.AGENTCLOCK_DIR = dir;
 
-const { loadArchive, saveArchive, mergeArchive, emptyArchive } = await import('../dist/archive.js');
+const { loadArchive, saveArchive, mergeArchive, emptyArchive, sessionKey } = await import(
+  '../dist/archive.js'
+);
 const { archivePath } = await import('../dist/paths.js');
 
 const session = (over = {}) => ({
+  agent: 'claude',
   sessionId: 's1',
   cwd: '/repo',
   project: '/repo',
@@ -38,7 +41,7 @@ test('a saved session round-trips exactly', async () => {
   const archive = await loadArchive();
 
   assert.equal(archive.bySession.size, 1);
-  assert.deepEqual(archive.bySession.get('s1'), original);
+  assert.deepEqual(archive.bySession.get('claude:s1'), original);
   assert.deepEqual(archive.byFile.get('/transcripts/s1.jsonl'), { mtimeMs: 111, size: 222 });
 });
 
@@ -53,7 +56,7 @@ test('archive survives the transcript being deleted', async () => {
 
 test('mergeArchive keeps the fuller view of a session', async () => {
   const archive = emptyArchive();
-  archive.bySession.set('s1', session({ turns: 2, activeMs: 1500, endedAt: 5000 }));
+  archive.bySession.set('claude:s1', session({ turns: 2, activeMs: 1500, endedAt: 5000 }));
 
   const grown = session({ turns: 5, activeMs: 4000, endedAt: 9000 });
   const merged = mergeArchive(archive, [grown]);
@@ -65,7 +68,7 @@ test('mergeArchive keeps the fuller view of a session', async () => {
 
 test('mergeArchive does not regress a session to a thinner parse', () => {
   const archive = emptyArchive();
-  archive.bySession.set('s1', session({ turns: 9, activeMs: 9000, endedAt: 9999 }));
+  archive.bySession.set('claude:s1', session({ turns: 9, activeMs: 9000, endedAt: 9999 }));
 
   const thin = session({ turns: 1, activeMs: 10, endedAt: 20 });
   const merged = mergeArchive(archive, [thin]);
@@ -75,9 +78,57 @@ test('mergeArchive does not regress a session to a thinner parse', () => {
 
 test('mergeArchive adds sessions it has not seen', () => {
   const archive = emptyArchive();
-  archive.bySession.set('s1', session());
+  archive.bySession.set('claude:s1', session());
   const merged = mergeArchive(archive, [session({ sessionId: 's2', file: '/t/s2.jsonl' })]);
   assert.equal(merged.length, 2);
+});
+
+test('two agents sharing a session id stay two sessions', () => {
+  // Agents mint ids independently. A bare-id key would silently merge them, and
+  // whichever looked "fuller" would erase the other outright.
+  const archive = emptyArchive();
+  const merged = mergeArchive(archive, [
+    session({ agent: 'claude', sessionId: 'same', file: '/t/a.jsonl' }),
+    session({ agent: 'codex', sessionId: 'same', file: '/t/b.jsonl' }),
+  ]);
+  assert.equal(merged.length, 2);
+  assert.deepEqual(merged.map((r) => r.agent).sort(), ['claude', 'codex']);
+  assert.equal(sessionKey({ agent: 'codex', sessionId: 'same' }), 'codex:same');
+});
+
+test('a v1 archive loads as Claude Code and is rewritten as v2', async () => {
+  // v1 predates multi-agent support, so every record in it is a Claude session —
+  // that is all the tool could read. Dropping them would throw away the history
+  // the archive exists to preserve.
+  const v1 = JSON.stringify({
+    v: 1,
+    sessionId: 'legacy',
+    cwd: '/repo',
+    project: '/repo',
+    label: 'repo',
+    startedAt: 1000,
+    endedAt: 5000,
+    turns: 2,
+    activeMs: 1500,
+    hasTurnData: true,
+    prompts: 3,
+    spans: [[1000, 2500]],
+    file: '/t/legacy.jsonl',
+    mtimeMs: 1,
+    size: 1,
+  });
+  await writeFile(archivePath(), `${v1}\n`);
+
+  const archive = await loadArchive();
+  const record = archive.bySession.get('claude:legacy');
+  assert.ok(record, 'a v1 line must still load');
+  assert.equal(record.agent, 'claude');
+  assert.equal(record.activeMs, 1500);
+
+  await saveArchive([record]);
+  const rewritten = JSON.parse((await readFile(archivePath(), 'utf8')).trim());
+  assert.equal(rewritten.v, 2);
+  assert.equal(rewritten.agent, 'claude');
 });
 
 test('a corrupt line does not lose the rest of the archive', async () => {

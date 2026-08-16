@@ -7,9 +7,11 @@ import path from 'node:path';
 const root = await mkdtemp(path.join(tmpdir(), 'agentclock-tx-'));
 process.env.CLAUDE_CONFIG_DIR = root;
 
-const { parseTranscript, listTranscripts, scanTranscripts } = await import(
-  '../dist/transcripts.js'
+const { parseTranscript, listTranscripts, claudeAdapter } = await import(
+  '../dist/agents/claude.js'
 );
+const { scanSessions } = await import('../dist/scan.js');
+const scanTranscripts = (options) => scanSessions([claudeAdapter], options);
 
 const PROJECTS = path.join(root, 'projects');
 const SLUG = '-Users-me-dev-app';
@@ -186,7 +188,7 @@ test('subagent transcripts are excluded from the session list', async () => {
     'utf8',
   );
 
-  const files = await listTranscripts();
+  const { files } = await listTranscripts();
   assert.ok(files.length > 0);
   assert.equal(
     files.filter((f) => f.file.includes('subagents')).length,

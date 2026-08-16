@@ -6,6 +6,58 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **agentclock reads more than one coding agent.** Codex joins Claude Code, in one
+  report: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, honouring `CODEX_HOME`.
+  Working time comes from Codex's own `task_complete` event — `started_at` and
+  `completed_at`, else `duration_ms`, else the `task_started` line paired with the
+  `task_complete` line — so "active time is exact or absent" is unchanged.
+- `--agent <ids>` narrows any command to `claude`, `codex`, or a list. With no
+  flag, every agent found on the machine is read.
+- `agentclock agents` lists what is installed, where it lives, and whether it can
+  report live state.
+- The dashboard gains a per-agent breakdown, an agent tag wherever a row could come
+  from either agent, and a heading naming the agents it covers. `stats` gains a
+  **by agent** block, `now` an agent column. The one-pager titles and footnotes
+  itself the same way.
+
+### Changed
+
+- Sessions are keyed by agent *and* id everywhere — the archive and the concurrency
+  sweep both. Agents mint ids independently, and a bare id would let one agent's
+  session close another's interval.
+- The archive is now `v: 2`, carrying the agent. `v: 1` lines still load, as Claude
+  Code sessions, because that is all agentclock could read when it wrote them.
+  Nothing needs migrating by hand.
+- `registry.ts` and `transcripts.ts` are gone. Adapters live in `src/agents/`, the
+  scan loop in `src/scan.ts`, and the pid/`ps` helpers in `src/proc.ts`. Adding an
+  agent is one file plus one line in `src/agents/index.ts`.
+- **`agentclock now --json` changed shape**, from a bare array of sessions to
+  `{ "sessions": [...], "blind": [...] }`, where `blind` names the selected agents
+  that cannot report live state. A script doing `agentclock now --json | jq length`
+  wants `.sessions | length` now. The array alone could not say the difference
+  between "Codex has nothing running" and "Codex cannot be asked". Each session
+  object also gains an `agent` field.
+- The macOS menu bar app is unaffected: it reads `~/.claude/sessions` directly
+  rather than shelling out to the CLI. `test/menubar.test.js` now cross-checks it
+  against `src/agents/claude.ts`, which is where the liveness rules moved.
+
+### Notes
+
+Concurrency still counts **sessions**, not agents: a Claude Code session and a Codex
+session working at the same moment count as two, and a session running five
+subagents still counts as one.
+
+Two things Codex cannot do are stated rather than papered over. It publishes no live
+registry, so `now` and `watch` name it as unreadable instead of showing an empty list
+that would read as "no Codex sessions are running". And cold rollouts are
+zstd-compressed, which Node 18 cannot decompress, so the skipped count is printed.
+
+Gemini CLI and Amp are not shipped because their session files carry no per-turn
+timing — every session would report zero working time. opencode and Cursor are not
+shipped because they store history in SQLite, which would cost a runtime dependency.
+
 ## [0.2.0] — 2026-08-16
 
 ### Added
