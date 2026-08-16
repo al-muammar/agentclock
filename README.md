@@ -43,6 +43,7 @@ agentclock now            # what's running right now
 agentclock watch          # live view, refreshing in place
 agentclock timeline       # per-day activity timeline
 agentclock stats          # historical summary in the terminal
+agentclock pdf            # one-page PDF summary, for sharing
 agentclock report --since 7d --anonymize -o week.html
 ```
 
@@ -71,6 +72,22 @@ Zoom and the selector are the only things that use script; it is inline, and the
 report still makes no network requests. With scripting off the full-day timeline
 renders and days still expand.
 
+### The one-pager
+
+```sh
+agentclock pdf --since 7d --anonymize -o week.pdf
+```
+
+`agentclock pdf` writes a single A4 page — the vital numbers, then the most
+productive day in the window: how much work it held, how many sessions, how many
+agents overlapped, which hour was busiest, and where its time went. Below that,
+work per day and the projects that took it. It goes to `~/.agentclock/one-pager.pdf`
+unless `-o` says otherwise.
+
+It is a real PDF, written directly: no headless browser, no PDF library, and the
+text stays selectable. That keeps the install a single package with no runtime
+dependencies.
+
 ### Options
 
 | Flag | Meaning |
@@ -78,8 +95,8 @@ renders and days still expand.
 | `--since <window>` | Time window: `7d`, `24h`, `90m`. Default `30d`. |
 | `--all` | No window — everything on disk. |
 | `--anonymize` | Replace project and session names with stable pseudonyms. |
-| `-o, --out <file>` | Where to write the dashboard. |
-| `--no-open` | Write the dashboard without opening it. |
+| `-o, --out <file>` | Where to write the dashboard or the PDF. |
+| `--no-open` | Write the file without opening it. |
 | `--hours <range>` | Zoom the timeline to a slice of the day: `9-18`, `09:30-13:00`. |
 | `--interval <seconds>` | Refresh rate for `watch`. Default `2`. |
 | `--no-archive` | Don't read or update `~/.agentclock/archive.jsonl`. |
@@ -147,6 +164,20 @@ npm install
 npm run build
 npm test
 ```
+
+To run the checkout you are working in as the real `agentclock` command:
+
+```sh
+npm run link:local     # build, then point the global agentclock here
+npm run unlink:local   # remove the global link again
+```
+
+It is `npm link` with a build in front of it, so it works from a git worktree
+too — run it in the worktree and `agentclock` is that branch until you run it
+somewhere else. The link points at the directory, so a later `npm run build`
+there is picked up with no re-linking. Deleting a checkout that is currently
+linked leaves a dangling `agentclock`; `npm run unlink:local` first, or just
+re-link from wherever you want it.
 
 ## License
 

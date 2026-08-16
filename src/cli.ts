@@ -5,10 +5,11 @@ import path from 'node:path';
 import { Anonymizer } from './project.js';
 import { computeStats } from './stats.js';
 import { duration, parseHourRange, parseWindow, type HourRange } from './format.js';
-import { defaultReportPath } from './paths.js';
+import { defaultOnePagerPath, defaultReportPath } from './paths.js';
 import { loadArchive, mergeArchive, saveArchive, emptyArchive } from './archive.js';
 import { readLiveSessions } from './registry.js';
 import { renderReport } from './render/html.js';
+import { renderOnePager } from './render/onepager.js';
 import {
   CLEAR_SCREEN,
   HIDE_CURSOR,
@@ -31,14 +32,15 @@ const HELP = `
     agentclock watch           Live view, refreshing in place
     agentclock stats           Historical summary in the terminal
     agentclock report          Build the dashboard
+    agentclock pdf             One-page PDF summary, for sharing
     agentclock --help
 
   Options
     --since <window>        Time window: 7d, 24h, 90m  (default 30d)
     --all                   No window; everything on disk
     --anonymize             Replace project and session names with stable pseudonyms
-    -o, --out <file>        Where to write the dashboard
-    --no-open               Write the dashboard without opening it
+    -o, --out <file>        Where to write the dashboard or the PDF
+    --no-open               Write the file without opening it
     --hours <range>         Zoom the timeline: 9-18, 09:30-13:00
     --interval <seconds>    Refresh rate for watch  (default 2)
     --no-archive            Do not read or update ~/.agentclock/archive.jsonl
@@ -297,6 +299,32 @@ async function commandReport(options: Options): Promise<number> {
   return 0;
 }
 
+/** One page, for handing to someone: the vital numbers and the best day in the window. */
+async function commandOnePager(options: Options): Promise<number> {
+  const { stats } = await gather(options);
+  const anon = new Anonymizer(options.anonymize);
+
+  const pdf = renderOnePager({
+    stats,
+    anon,
+    windowLabel: windowLabel(options),
+    generatedAt: Date.now(),
+  });
+
+  const out = options.out ?? defaultOnePagerPath();
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, pdf);
+
+  process.stdout.write(`\n  One-pager written to ${out} (${(pdf.length / 1024).toFixed(0)} KB)\n`);
+
+  if (options.open) {
+    const opened = await openFile(out);
+    if (!opened) process.stdout.write('  Open it in a PDF viewer to read it.\n');
+  }
+  process.stdout.write('\n');
+  return 0;
+}
+
 async function commandTimeline(options: Options): Promise<number> {
   const { stats } = await gather(options);
 
@@ -369,6 +397,8 @@ export async function run(argv: string[]): Promise<number> {
       return commandStats(options);
     case 'report':
       return commandReport(options);
+    case 'pdf':
+      return commandOnePager(options);
     case 'timeline':
       return commandTimeline(options);
     case 'watch':
