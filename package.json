@@ -45,7 +45,10 @@
     "test": "node --test test/*.test.js",
     "start": "npm run build && node bin/agentclock.js",
     "link:local": "npm run build && npm link && node -e \"console.log('\\n  agentclock now runs from ' + process.cwd() + '\\n')\"",
-    "unlink:local": "npm rm -g agentclock"
+    "unlink:local": "npm rm -g agentclock",
+    "menubar:build": "make -C macos",
+    "menubar:install": "make -C macos install",
+    "menubar:uninstall": "make -C macos uninstall"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",

@@ -88,6 +88,38 @@ It is a real PDF, written directly: no headless browser, no PDF library, and the
 text stays selectable. That keeps the install a single package with no runtime
 dependencies.
 
+### The macOS menu bar app
+
+```sh
+npm run menubar:install
+```
+
+Puts `◐ 4` in the menu bar: how many agents are working right now. Click it for
+the list — which sessions, in which projects, for how long — plus *Open
+dashboard*, *Launch at login* and a smoothing setting.
+
+<!-- The pitch above is "no daemon, nothing resident", so be explicit here. -->
+This is the one resident piece, and it is optional and installed separately — it
+is not part of the npm package and `npx agentclock` never starts it. It costs
+about **20 MB of memory and a tenth of a percent of one core**, because it reads
+`~/.claude/sessions` directly rather than running the CLI on a timer: ~1 ms per
+refresh against ~130 ms to spawn Node.
+
+The count is **smoothed**: a session keeps counting until it has been quiet for 30
+seconds, so the number rises the instant work starts and falls only once an agent
+has genuinely stopped. Mostly this covers `busy → waiting → busy` around a
+permission prompt, where the agent hasn't stopped working and the badge shouldn't
+say it has. Sampling the registry at 4 Hz for ten minutes recorded no raw
+flicker at all — Claude Code holds `busy` for a whole turn rather than toggling
+between tool calls — which is why the window is deliberately short rather than a
+minute. Sessions in the tail are dimmed in the dropdown, so the smoothing is
+visible rather than a quiet fiction. Adjust it under *Smoothing*, or turn it off.
+
+Requires macOS 11+ and the Xcode Command Line Tools (`xcode-select --install`) —
+there is no Xcode project and nothing to download. Because you compile it
+yourself, macOS never quarantines it: no Gatekeeper prompt, no developer account.
+`npm run menubar:uninstall` removes it.
+
 ### Options
 
 | Flag | Meaning |
@@ -178,6 +210,18 @@ somewhere else. The link points at the directory, so a later `npm run build`
 there is picked up with no re-linking. Deleting a checkout that is currently
 linked leaves a dangling `agentclock`; `npm run unlink:local` first, or just
 re-link from wherever you want it.
+
+The menu bar app lives in `macos/` and builds with one `swiftc` call:
+
+```sh
+npm run menubar:build       # -> macos/build/AgentClock.app
+make -C macos run           # run it in the foreground, ^C to stop
+```
+
+It reimplements `readLiveSessions()` in Swift, which is a real duplication —
+`test/menubar.test.js` runs both against the same fixture directory and fails if
+they ever disagree. That test skips itself off macOS, so the Linux CI legs are
+unaffected.
 
 ## License
 

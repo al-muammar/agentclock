@@ -37,6 +37,9 @@ stats.ts        spans → concurrency, days, projects, timeline
 archive.ts      ~/.agentclock/archive.jsonl        → history past Claude's 30-day sweep
 render/         term.ts (ANSI) · html.ts + svg.ts (self-contained report)
                 pdf.ts (PDF primitives) + onepager.ts (one-page summary)
+
+macos/          AgentClock.swift — menu bar badge. Separate app, not in the npm
+                package. Built by `make -C macos`, one swiftc call, no Xcode.
 ```
 
 Everything downstream of `stats.ts` consumes **spans**: half-open `[start, end)`
@@ -74,6 +77,20 @@ intervals when a session was working.
   widths; without them nothing right-aligned lines up. The one-pager must never
   spill onto a second sheet: a section that cannot fit is dropped or summed, and
   `test/pdf.test.js` asserts `/Count 1` and that nothing is drawn off the page.
+- **The menu bar app duplicates the registry rules, and a test holds them equal.**
+  `macos/AgentClock.swift` reimplements `readLiveSessions()` because spawning Node
+  every two seconds costs ~130x more CPU than reading the directory (~130ms vs
+  ~1ms). Change `registry.ts` and you must change the Swift too;
+  `test/menubar.test.js` runs both against one fixture and fails if they diverge.
+  Keep every fail-open branch — the port must fail toward showing a phantom
+  session, exactly as the TypeScript does. It stays ad-hoc signed on purpose:
+  locally compiled code is never quarantined, so there is no Gatekeeper prompt and
+  no paid certificate. That rules out `SMAppService`, which refuses ad-hoc
+  signatures — launch-at-login writes a plain Aqua LaunchAgent instead.
+- **The badge is smoothed, and the dropdown shows it.** Raw `busy` flickers at
+  every turn boundary, so a session counts until it has been quiet for the hold
+  window. Sessions in that tail render dimmed; never let the count claim work that
+  the list does not account for.
 - **Nothing leaves the machine.** No telemetry, no network calls, ever.
 
 ## Conventions
