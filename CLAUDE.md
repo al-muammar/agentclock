@@ -17,6 +17,16 @@ npm run link:local # build, then make this checkout the global `agentclock`
 the global command follows whichever checkout linked last. `unlink:local` undoes
 it. Delete a linked worktree without unlinking and `agentclock` dangles.
 
+## Releasing
+
+`.claude/skills/release/SKILL.md` is the whole procedure: bump, changelog,
+release PR, CI, tag the merged commit, publish, GitHub Release. Two things it
+exists to stop you forgetting — the version lives in **`package.json`,
+`package-lock.json` and `src/cli.ts`** and all three must agree (`--version`
+reads the constant, not the manifest, so the manifest stays out of the bundle;
+`test/cli.test.js` fails a half-done bump), and the tag goes on the **merged**
+commit, never a local one, so it can only ever name a tree CI went green on.
+
 ## Shape
 
 ```

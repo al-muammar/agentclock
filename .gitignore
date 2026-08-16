@@ -5,3 +5,9 @@ dist/
 *.tgz
 dashboard.html
 one-pager.pdf
+week.pdf
+
+# .claude/skills/ is checked in; the rest of .claude/ is local machine state.
+.claude/worktrees/
+.claude/settings.local.json
+tasks/
