@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -158,6 +158,23 @@ test('the npm package ships the menu bar sources but never a built binary', () =
 
   const built = files.filter((f) => f.startsWith('macos/build'));
   assert.deepEqual(built, [], 'macos/build must never be published');
+});
+
+/**
+ * The bundle carries its own version, which makes four places that must agree —
+ * package.json, package-lock.json, src/cli.ts and here. The other three are
+ * covered by test/cli.test.js; this closes the gap, because a stale Info.plist
+ * ships an app that misreports itself in Finder and nothing else would notice.
+ */
+test('the app bundle version matches package.json', () => {
+  const pkg = JSON.parse(readFileSync(path.join(here, '..', 'package.json'), 'utf8'));
+  const plist = readFileSync(path.join(here, '..', 'macos', 'Info.plist'), 'utf8');
+
+  for (const key of ['CFBundleShortVersionString', 'CFBundleVersion']) {
+    const m = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(plist);
+    assert.ok(m, `${key} missing from Info.plist`);
+    assert.equal(m[1], pkg.version, `${key} disagrees with package.json`);
+  }
 });
 
 test('cleanup', () => {

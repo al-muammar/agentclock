@@ -6,6 +6,36 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-16
+
+### Added
+
+- `agentclock menubar` installs a macOS menu bar badge showing how many agents
+  are working right now — the same count as the "N working" line, not the
+  number of sessions you have open. Click it for the list: which sessions, in
+  which projects, for how long, plus the ones waiting on you. It also offers
+  *Open dashboard*, *Launch at login*, and a smoothing setting.
+  `agentclock menubar uninstall` removes it.
+
+### Notes
+
+The menu bar app is optional, installed separately, and is the one resident
+piece of agentclock — the CLI itself still starts nothing and leaves nothing
+running. It costs about 20 MB of memory and 0.17% of one core, because it reads
+`~/.claude/sessions` natively rather than running the CLI on a timer: ~1 ms per
+refresh against ~130 ms to spawn Node.
+
+It ships as Swift **source** and is compiled on your machine by one `swiftc`
+call, so it needs the Xcode Command Line Tools but no Xcode project. That is
+also what keeps it out of Gatekeeper's way: locally compiled code is never
+quarantined, so there is no "unidentified developer" prompt and no developer
+account. No binary is published to npm.
+
+The count is smoothed — a session keeps counting until it has been quiet for
+30 seconds, which covers the pause around a permission prompt. Sessions in that
+tail are dimmed in the dropdown, so the smoothing is visible rather than
+implied. Adjustable in the menu, off included.
+
 ## [0.2.0] — 2026-08-16
 
 ### Added
@@ -54,6 +84,7 @@ A session with N subagents counts as one. Active time comes from Claude Code's
 own `turn_duration.durationMs` — it is exact or absent, never estimated.
 Nothing is sent anywhere.
 
-[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.3.0
 [0.2.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.2.0
 [0.1.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.1.0
