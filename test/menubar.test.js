@@ -138,6 +138,28 @@ test('--count reports the unsmoothed working total', { skip: !runnable }, () => 
   assert.equal(out.trim(), '3');
 });
 
+/**
+ * The app is shipped as source and compiled on the user's machine — that is what
+ * keeps it clear of Gatekeeper. Shipping a prebuilt binary would silently undo
+ * that, and `files: ["macos"]` sweeps in macos/build/ unless it is excluded, so
+ * assert on the actual packed file list rather than trusting .gitignore.
+ */
+test('the npm package ships the menu bar sources but never a built binary', () => {
+  const listed = execFileSync('npm', ['pack', '--dry-run', '--json'], {
+    cwd: path.join(here, '..'),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const files = JSON.parse(listed)[0].files.map((f) => f.path);
+
+  assert.ok(files.includes('macos/AgentClock.swift'), 'the Swift source must ship');
+  assert.ok(files.includes('macos/Makefile'), 'the Makefile must ship');
+  assert.ok(files.includes('macos/Info.plist'), 'the bundle plist must ship');
+
+  const built = files.filter((f) => f.startsWith('macos/build'));
+  assert.deepEqual(built, [], 'macos/build must never be published');
+});
+
 test('cleanup', () => {
   rmSync(root, { recursive: true, force: true });
 });

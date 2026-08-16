@@ -44,6 +44,7 @@ agentclock watch          # live view, refreshing in place
 agentclock timeline       # per-day activity timeline
 agentclock stats          # historical summary in the terminal
 agentclock pdf            # one-page PDF summary, for sharing
+agentclock menubar        # install the macOS menu bar badge
 agentclock report --since 7d --anonymize -o week.html
 ```
 
@@ -91,12 +92,19 @@ dependencies.
 ### The macOS menu bar app
 
 ```sh
-npm run menubar:install
+agentclock menubar             # build and install it
+agentclock menubar uninstall   # remove it again
 ```
 
 Puts `◐ 4` in the menu bar: how many agents are working right now. Click it for
 the list — which sessions, in which projects, for how long — plus *Open
 dashboard*, *Launch at login* and a smoothing setting.
+
+The app ships as source and is compiled on your machine — one `swiftc` call,
+about five seconds. That is deliberate: code compiled locally is never
+quarantined, so there is no Gatekeeper prompt, no notarization and no developer
+account. It also means the npm package stays source-only rather than carrying a
+prebuilt binary.
 
 <!-- The pitch above is "no daemon, nothing resident", so be explicit here. -->
 This is the one resident piece, and it is optional and installed separately — it
@@ -116,9 +124,8 @@ minute. Sessions in the tail are dimmed in the dropdown, so the smoothing is
 visible rather than a quiet fiction. Adjust it under *Smoothing*, or turn it off.
 
 Requires macOS 11+ and the Xcode Command Line Tools (`xcode-select --install`) —
-there is no Xcode project and nothing to download. Because you compile it
-yourself, macOS never quarantines it: no Gatekeeper prompt, no developer account.
-`npm run menubar:uninstall` removes it.
+there is no Xcode project and nothing to download. `agentclock menubar` says so
+if they are missing rather than failing with a compiler error.
 
 ### Options
 

@@ -25,6 +25,8 @@
   "files": [
     "bin",
     "dist",
+    "macos",
+    "!macos/build",
     "README.md",
     "LICENSE"
   ],

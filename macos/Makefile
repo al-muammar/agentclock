@@ -11,7 +11,10 @@
 #   make clean
 
 APP      := AgentClock
-BUNDLE   := build/$(APP).app
+# Overridable: `agentclock menubar` builds into ~/.agentclock rather than here,
+# because a globally installed npm package may sit in a directory we cannot write.
+BUILD    ?= build
+BUNDLE   := $(BUILD)/$(APP).app
 BIN      := $(BUNDLE)/Contents/MacOS/$(APP)
 DEST     := /Applications/$(APP).app
 LAUNCHD  := $(HOME)/Library/LaunchAgents/dev.agentclock.menubar.plist
@@ -63,4 +66,4 @@ uninstall:
 	@echo "removed $(DEST) and $(LAUNCHD)"
 
 clean:
-	@rm -rf build
+	@rm -rf $(BUILD)

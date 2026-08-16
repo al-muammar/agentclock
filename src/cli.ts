@@ -1,11 +1,12 @@
-import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { mkdir, writeFile, access } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { Anonymizer } from './project.js';
 import { computeStats } from './stats.js';
 import { duration, parseHourRange, parseWindow, type HourRange } from './format.js';
-import { defaultOnePagerPath, defaultReportPath } from './paths.js';
+import { agentclockDir, defaultOnePagerPath, defaultReportPath } from './paths.js';
 import { loadArchive, mergeArchive, saveArchive, emptyArchive } from './archive.js';
 import { readLiveSessions } from './registry.js';
 import { renderReport } from './render/html.js';
@@ -33,6 +34,7 @@ const HELP = `
     agentclock stats           Historical summary in the terminal
     agentclock report          Build the dashboard
     agentclock pdf             One-page PDF summary, for sharing
+    agentclock menubar         Install the macOS menu bar badge (macOS only)
     agentclock --help
 
   Options
@@ -52,10 +54,14 @@ const HELP = `
     Subagents are part of their parent session and are never counted separately.
     Claude Code deletes transcripts after 30 days; agentclock keeps what it has
     already seen in ~/.agentclock/archive.jsonl, so history outlives the sweep.
+    "agentclock menubar" compiles a small native app from source and installs it
+    to /Applications; "agentclock menubar uninstall" removes it again.
 `;
 
 interface Options {
   command: string;
+  /** Second bare word, e.g. the "uninstall" in `agentclock menubar uninstall`. */
+  subcommand: string | null;
   since: number | null;
   all: boolean;
   anonymize: boolean;
@@ -71,6 +77,7 @@ interface Options {
 export function parseArgs(argv: string[]): { options: Options; error?: string } {
   const options: Options = {
     command: 'report',
+    subcommand: null,
     since: 30 * 86_400_000,
     all: false,
     anonymize: false,
@@ -163,6 +170,7 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
   }
 
   if (rest.length > 0) options.command = rest[0]!;
+  if (rest.length > 1) options.subcommand = rest[1]!;
   return { options };
 }
 
@@ -252,6 +260,92 @@ async function commandWatch(options: Options): Promise<number> {
   } finally {
     restore();
   }
+  return 0;
+}
+
+/** Does this executable exist on PATH? */
+function haveCommand(cmd: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(cmd, ['--version'], (err) => resolve(!err));
+  });
+}
+
+/**
+ * Build and install the macOS menu bar app.
+ *
+ * The app is shipped as source, not as a binary, and compiled on the machine that
+ * runs it. That is what keeps it out of Gatekeeper's way: code compiled locally is
+ * never quarantined, so there is no "unidentified developer" dialog and no need for
+ * a paid Developer ID. It also means the npm package stays a single dependency-free
+ * download rather than carrying a prebuilt executable for each architecture.
+ */
+async function commandMenubar(options: Options): Promise<number> {
+  const w = (s: string) => process.stdout.write(s);
+
+  if (process.platform !== 'darwin') {
+    process.stderr.write('\n  The menu bar app is macOS only.\n\n');
+    return 1;
+  }
+
+  // dist/cli.js -> the package root, which holds macos/ in both a git checkout
+  // and an installed package.
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const macosDir = path.join(root, 'macos');
+  try {
+    await access(path.join(macosDir, 'Makefile'));
+  } catch {
+    process.stderr.write(
+      `\n  Could not find the menu bar sources at ${macosDir}.\n` +
+        '  Reinstall agentclock, or build from a git checkout with `npm run menubar:install`.\n\n',
+    );
+    return 1;
+  }
+
+  const uninstall = options.subcommand === 'uninstall' || options.subcommand === 'remove';
+
+  if (!uninstall && !(await haveCommand('swiftc'))) {
+    process.stderr.write(
+      '\n  The menu bar app is compiled on your machine, and swiftc was not found.\n' +
+        '  Install the Xcode Command Line Tools, then try again:\n\n' +
+        '      xcode-select --install\n\n',
+    );
+    return 1;
+  }
+
+  // Never build inside the package: a global npm install may live somewhere this
+  // user cannot write.
+  const build = path.join(agentclockDir(), 'menubar-build');
+  await mkdir(build, { recursive: true });
+
+  if (!uninstall) w('\n  Compiling the menu bar app…\n\n');
+
+  const code = await new Promise<number>((resolve) => {
+    const child = spawn(
+      'make',
+      ['-C', macosDir, uninstall ? 'uninstall' : 'install', `BUILD=${build}`],
+      {
+        stdio: 'inherit',
+      },
+    );
+    child.on('error', () => resolve(-1));
+    child.on('close', (c) => resolve(c ?? 1));
+  });
+
+  if (code === -1) {
+    process.stderr.write(
+      '\n  Could not run `make`. Install the Xcode Command Line Tools:\n\n' +
+        '      xcode-select --install\n\n',
+    );
+    return 1;
+  }
+  if (code !== 0) return code;
+
+  w(
+    uninstall
+      ? '\n  Removed. The badge is gone from your menu bar.\n\n'
+      : '\n  Look for the ◐ in your menu bar. Click it for the session list.\n' +
+          '  Remove it again with: agentclock menubar uninstall\n\n',
+  );
   return 0;
 }
 
@@ -403,6 +497,8 @@ export async function run(argv: string[]): Promise<number> {
       return commandTimeline(options);
     case 'watch':
       return commandWatch(options);
+    case 'menubar':
+      return commandMenubar(options);
     default:
       process.stderr.write(
         `  Unknown command: ${options.command}\n\n  Run agentclock --help for usage.\n\n`,
