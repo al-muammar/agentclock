@@ -10,7 +10,12 @@ no daemon and nothing resident.
 npm run build      # tsc → dist/ (tests import dist, so build before testing)
 npm test           # builds, then runs node --test
 npm run typecheck
+npm run link:local # build, then make this checkout the global `agentclock`
 ```
+
+`link:local` is `npm link` with a build in front, and it works from a worktree —
+the global command follows whichever checkout linked last. `unlink:local` undoes
+it. Delete a linked worktree without unlinking and `agentclock` dangles.
 
 ## Shape
 
@@ -21,6 +26,7 @@ spans.ts        merge / clip
 stats.ts        spans → concurrency, days, projects, timeline
 archive.ts      ~/.agentclock/archive.jsonl        → history past Claude's 30-day sweep
 render/         term.ts (ANSI) · html.ts + svg.ts (self-contained report)
+                pdf.ts (PDF primitives) + onepager.ts (one-page summary)
 ```
 
 Everything downstream of `stats.ts` consumes **spans**: half-open `[start, end)`
@@ -52,6 +58,12 @@ intervals when a session was working.
   with scripting off the full-day timeline still renders and days still expand,
   because the drill-down is `<details>`, not a click handler. No inline event
   attributes.
+- **The PDF is written by hand, and it is one page.** `render/pdf.ts` emits PDF
+  1.4 directly — no library, no headless browser, because zero dependencies is
+  worth more than the code it saves. Text is WinAnsi with real Helvetica AFM
+  widths; without them nothing right-aligned lines up. The one-pager must never
+  spill onto a second sheet: a section that cannot fit is dropped or summed, and
+  `test/pdf.test.js` asserts `/Count 1` and that nothing is drawn off the page.
 - **Nothing leaves the machine.** No telemetry, no network calls, ever.
 
 ## Conventions
@@ -67,10 +79,14 @@ intervals when a session was working.
 ## Verifying a change
 
 - `npm test` must pass. New behaviour needs a test in the matching file:
-  `transcripts` · `render` · `archive` · `timeline` · `core` · `cli`.
+  `transcripts` · `render` · `pdf` · `archive` · `timeline` · `core` · `cli`.
 - **Changed the report? Render it and look at it, in both themes.** Markup
   checks alone missed chart tracks going white on dark — the fix was declaring
   `color-scheme: light dark`.
+- **Changed the PDF? Rasterise it and look at it.** `sips -s format png
+  one-pager.pdf --out one-pager.png`. `gs -o /dev/null -sDEVICE=nullpage` and
+  `pdfinfo` are independent parsers worth running too — a bad xref offset still
+  opens in Preview.
 - Changed parsing or stats? Check it against a real `~/.claude` and compare the
   totals, not just that it runs. A full scan of ~700 MB should stay around 3s;
   if it doesn't, time the stages separately — the scan and the stats reduction

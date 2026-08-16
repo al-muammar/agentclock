@@ -15,6 +15,16 @@ test('defaults to a 30 day window', () => {
 test('a bare word is the command', () => {
   assert.equal(parse(['now']).options.command, 'now');
   assert.equal(parse(['stats']).options.command, 'stats');
+  assert.equal(parse(['pdf']).options.command, 'pdf');
+});
+
+test('the one-pager takes the same window and output flags as the dashboard', () => {
+  const { options, error } = parse(['pdf', '--since', '7d', '--anonymize', '-o', 'q3.pdf']);
+  assert.equal(error, undefined);
+  assert.equal(options.command, 'pdf');
+  assert.equal(options.since, 7 * 86_400_000);
+  assert.equal(options.anonymize, true);
+  assert.ok(options.out.endsWith('/q3.pdf'));
 });
 
 test('flags may appear before or after the command', () => {

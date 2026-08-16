@@ -50,3 +50,4 @@ jobs:
         run: |
           node bin/agentclock.js now
           node bin/agentclock.js stats
+          node bin/agentclock.js pdf --no-open -o "$RUNNER_TEMP/one-pager.pdf"

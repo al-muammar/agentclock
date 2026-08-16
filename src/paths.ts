@@ -39,3 +39,8 @@ export function archivePath(): string {
 export function defaultReportPath(): string {
   return path.join(agentclockDir(), 'dashboard.html');
 }
+
+/** Default output location for the shareable one-page PDF. */
+export function defaultOnePagerPath(): string {
+  return path.join(agentclockDir(), 'one-pager.pdf');
+}
