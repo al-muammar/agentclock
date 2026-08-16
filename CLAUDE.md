@@ -37,6 +37,10 @@ stats.ts        spans → concurrency, days, projects, timeline
 archive.ts      ~/.agentclock/archive.jsonl        → history past Claude's 30-day sweep
 render/         term.ts (ANSI) · html.ts + svg.ts (self-contained report)
                 pdf.ts (PDF primitives) + onepager.ts (one-page summary)
+
+macos/          AgentClock.swift — menu bar badge. Ships as SOURCE in the npm
+                package and is compiled on the user's machine by
+                `agentclock menubar`. One swiftc call, no Xcode project.
 ```
 
 Everything downstream of `stats.ts` consumes **spans**: half-open `[start, end)`
@@ -74,6 +78,28 @@ intervals when a session was working.
   widths; without them nothing right-aligned lines up. The one-pager must never
   spill onto a second sheet: a section that cannot fit is dropped or summed, and
   `test/pdf.test.js` asserts `/Count 1` and that nothing is drawn off the page.
+- **The menu bar app duplicates the registry rules, and a test holds them equal.**
+  `macos/AgentClock.swift` reimplements `readLiveSessions()` because spawning Node
+  every two seconds costs ~130x more CPU than reading the directory (~130ms vs
+  ~1ms). Change `registry.ts` and you must change the Swift too;
+  `test/menubar.test.js` runs both against one fixture and fails if they diverge.
+  Keep every fail-open branch — the port must fail toward showing a phantom
+  session, exactly as the TypeScript does. It stays ad-hoc signed on purpose:
+  locally compiled code is never quarantined, so there is no Gatekeeper prompt and
+  no paid certificate. That rules out `SMAppService`, which refuses ad-hoc
+  signatures — launch-at-login writes a plain Aqua LaunchAgent instead.
+- **The menu bar app ships as source, never as a binary.** `agentclock menubar`
+  compiles it on the user's machine; that is the whole reason there is no
+  Gatekeeper prompt. `files` lists `macos` *and* `!macos/build`, because naming a
+  directory in `files` overrides `.gitignore` and would otherwise publish the
+  compiled 215 KB bundle. `test/menubar.test.js` asserts on the real `npm pack`
+  file list, so this cannot regress silently. The build output goes to
+  `~/.agentclock/menubar-build`, never inside the package — a global install may
+  sit somewhere the user cannot write.
+- **The badge is smoothed, and the dropdown shows it.** Raw `busy` flickers at
+  every turn boundary, so a session counts until it has been quiet for the hold
+  window. Sessions in that tail render dimmed; never let the count claim work that
+  the list does not account for.
 - **Nothing leaves the machine.** No telemetry, no network calls, ever.
 
 ## Conventions

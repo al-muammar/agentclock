@@ -19,6 +19,16 @@ test('a bare word is the command', () => {
   assert.equal(parse(['pdf']).options.command, 'pdf');
 });
 
+test('menubar takes a second bare word as its subcommand', () => {
+  assert.equal(parse(['menubar']).options.command, 'menubar');
+  assert.equal(parse(['menubar']).options.subcommand, null);
+  assert.equal(parse(['menubar', 'uninstall']).options.subcommand, 'uninstall');
+  // Flags between the two words must not be mistaken for the subcommand.
+  const { options } = parse(['menubar', '--verbose', 'uninstall']);
+  assert.equal(options.command, 'menubar');
+  assert.equal(options.subcommand, 'uninstall');
+});
+
 test('the one-pager takes the same window and output flags as the dashboard', () => {
   const { options, error } = parse(['pdf', '--since', '7d', '--anonymize', '-o', 'q3.pdf']);
   assert.equal(error, undefined);

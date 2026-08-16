@@ -44,6 +44,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # The menu bar app must exist before npm test, or test/menubar.test.js builds
+      # it itself inside the test timeout. Linux legs skip it — no swiftc, no AppKit.
+      - name: Build the menu bar app
+        if: runner.os == 'macOS'
+        run: npm run menubar:build
       - run: npm test
       # A clean machine has no ~/.claude at all: the CLI must say so, not crash.
       - name: Runs with no Claude data
