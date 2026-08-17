@@ -284,6 +284,108 @@ test('the liveness rule holds on both sides', { skip: !runnable }, async () => {
 });
 
 /**
+ * The badge and the dropdown are built from the same numbers, so when they
+ * disagree there is no way from the outside to tell which half is wrong. These
+ * pin the relationship: every session appears exactly once, and the group
+ * headers account for all of them.
+ */
+test('every working session gets its own row in the dropdown', { skip: !runnable }, () => {
+  const out = execFileSync(binary, ['--menu'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
+    encoding: 'utf8',
+  });
+
+  // busy, shell, and the busy worktree session.
+  for (const name of ['aaaaaaaa', 'dddddddd', '55555555']) {
+    const id = `${name}-0000-0000-0000-000000000000`;
+    const hits = out.split('\n').filter((l) => l.includes(id.slice(0, 8)));
+    assert.equal(
+      hits.length,
+      1,
+      `${id.slice(0, 8)} should appear exactly once, got ${hits.length}`,
+    );
+  }
+
+  // The header count and the rows under it must agree. Asserted as a relationship
+  // rather than a fixed number: a session held up only by a background agent also
+  // counts as working, so the literal total moves with the fixture.
+  const lines = out.split('\n');
+  const header = /(\d+) working/.exec(out);
+  assert.ok(header, 'expected a "N working" header');
+
+  const end = lines.findIndex((l) => l.trim() === '---');
+  const group = lines.slice(0, end === -1 ? lines.length : end);
+  const sessionRows = group.filter((l) => /^\s*[●◐]\s/.test(l)).length;
+
+  assert.equal(
+    sessionRows,
+    Number(header[1]),
+    `header says ${header[1]} working but ${sessionRows} rows are drawn`,
+  );
+});
+
+/**
+ * A bare basename reads badly for generic repo names — `backend` says nothing
+ * about which backend, which is how a session that is plainly listed still gets
+ * missed. The floor is the parent directory, and it grows further on a genuine
+ * collision.
+ */
+test('project labels carry the parent, and grow when they still collide', {
+  skip: !runnable,
+}, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'agentclock-labels-'));
+  const s = path.join(dir, 'sessions');
+  mkdirSync(s, { recursive: true });
+  const put = (n, cwd, id) =>
+    writeFileSync(
+      path.join(s, n),
+      JSON.stringify({
+        pid: LIVE,
+        sessionId: id,
+        cwd,
+        startedAt: now - 60_000,
+        status: 'busy',
+        kind: 'interactive',
+      }),
+    );
+
+  put('1.json', '/w/itle/backend', '10000000-0000-0000-0000-000000000000');
+  // Same basename AND same parent — must grow to three components.
+  put('2.json', '/w/one/api/backend', '20000000-0000-0000-0000-000000000000');
+  put('3.json', '/w/two/api/backend', '30000000-0000-0000-0000-000000000000');
+  put('4.json', '/w/ai/pronte/.claude/worktrees/f', '40000000-0000-0000-0000-000000000000');
+
+  const out = execFileSync(binary, ['--menu'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: dir },
+    encoding: 'utf8',
+  });
+
+  assert.match(out, /itle\/backend/, 'the parent is always shown');
+  assert.match(out, /one\/api\/backend/, 'a still-colliding label must grow');
+  assert.match(out, /two\/api\/backend/, 'a still-colliding label must grow');
+  assert.match(out, /ai\/pronte/, 'the worktree is folded away before labelling');
+  assert.doesNotMatch(out, /worktrees/, 'no raw worktree path in a label');
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('the group headers account for every live session', { skip: !runnable }, () => {
+  const out = execFileSync(binary, ['--menu'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
+    encoding: 'utf8',
+  });
+
+  const n = (re) => Number((re.exec(out) ?? [0, 0])[1]);
+  const working = n(/(\d+) working/);
+  const waiting = n(/(\d+) waiting on you/);
+  const idle = n(/(\d+) idle/);
+
+  // 7 live sessions in the fixture. If the groups do not sum, some session is
+  // either missing from the menu or counted twice.
+  assert.equal(working + waiting + idle, 7, `${working}+${waiting}+${idle} should be 7`);
+});
+
+/**
  * The app is shipped as source and compiled on the user's machine — that is what
  * keeps it clear of Gatekeeper. Shipping a prebuilt binary would silently undo
  * that, and `files: ["macos"]` sweeps in macos/build/ unless it is excluded, so
