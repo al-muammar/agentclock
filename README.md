@@ -31,9 +31,14 @@ deleted after 30 days. agentclock turns what's on disk into an answer:
 - How often you run agents in parallel — and how often you don't
 - Which projects the time went to
 
-**A session with five subagents counts as one session.** Subagents run inside their
-parent and share its session id, so this falls out of the data model rather than
-being a rule the tool applies.
+**In history, a session with five subagents counts as one session.** Subagents run
+inside their parent and share its session id, so this falls out of the data model
+rather than being a rule the tool applies.
+
+**Live, you see both.** `agentclock now` and the menu bar badge show how many
+agents are running inside each session — `◐ 5 (12)` is five sessions working with
+twelve agents between them. A session whose only worker is a background agent
+counts as working, because it is.
 
 ## Usage
 
@@ -96,9 +101,10 @@ agentclock menubar             # build and install it
 agentclock menubar uninstall   # remove it again
 ```
 
-Puts `◐ 4` in the menu bar: how many agents are working right now. Click it for
-the list — which sessions, in which projects, for how long — plus *Open
-dashboard*, *Launch at login* and a smoothing setting.
+Puts `◐ 4` in the menu bar: how many sessions are working right now, and `◐ 4 (9)`
+when there are subagents running inside them. Click it for the list — which
+sessions, in which projects, for how long, and which agents each one has out —
+plus *Open dashboard*, *Launch at login* and a smoothing setting.
 
 The app ships as source and is compiled on your machine — one `swiftc` call,
 about five seconds. That is deliberate: code compiled locally is never

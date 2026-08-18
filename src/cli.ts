@@ -9,6 +9,7 @@ import { duration, parseHourRange, parseWindow, type HourRange } from './format.
 import { agentclockDir, defaultOnePagerPath, defaultReportPath } from './paths.js';
 import { loadArchive, mergeArchive, saveArchive, emptyArchive } from './archive.js';
 import { readLiveSessions } from './registry.js';
+import { readLiveSubagentsFor } from './subagents.js';
 import { renderReport } from './render/html.js';
 import { renderOnePager } from './render/onepager.js';
 import {
@@ -51,7 +52,9 @@ const HELP = `
     --version
 
   Notes
-    Subagents are part of their parent session and are never counted separately.
+    History counts a session with N subagents as one; "now" and the menu bar also
+    show the agents running inside each session, and count a session as working
+    when its only worker is a background agent.
     Claude Code deletes transcripts after 30 days; agentclock keeps what it has
     already seen in ~/.agentclock/archive.jsonl, so history outlives the sweep.
     "agentclock menubar" compiles a small native app from source and installs it
@@ -176,14 +179,17 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
 
 async function commandNow(options: Options): Promise<number> {
   const sessions = await readLiveSessions();
+  const subagents = await readLiveSubagentsFor(sessions);
   const anon = new Anonymizer(options.anonymize);
 
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(sessions, null, 2)}\n`);
+    // Additive: every field the old shape had is still where it was.
+    const payload = sessions.map((s) => ({ ...s, agents: subagents.get(s.sessionId) ?? [] }));
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return 0;
   }
 
-  process.stdout.write(renderNow(sessions, anon));
+  process.stdout.write(renderNow(sessions, anon, subagents));
   return 0;
 }
 
@@ -253,8 +259,11 @@ async function commandWatch(options: Options): Promise<number> {
   try {
     while (!stop) {
       const sessions = await readLiveSessions();
+      const subagents = await readLiveSubagentsFor(sessions);
       const hint = `  ${SHOW_CURSOR}refreshing every ${options.interval}s · ctrl-c to stop\n`;
-      process.stdout.write(CLEAR_SCREEN + renderNow(sessions, anon) + hint + HIDE_CURSOR);
+      process.stdout.write(
+        CLEAR_SCREEN + renderNow(sessions, anon, subagents) + hint + HIDE_CURSOR,
+      );
       await new Promise((resolve) => setTimeout(resolve, interval));
     }
   } finally {

@@ -6,6 +6,29 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Live views now count the subagents running inside each session, not just the
+  sessions. The menu bar badge reads `◐ 5 (12)` — five sessions working, twelve
+  agents inside them — and its dropdown lists each agent under its session.
+  `agentclock now` gains an `AGENTS` column and a line per running agent, and
+  `now --json` gains an `agents` array on every session.
+
+### Changed
+
+- **A session counts as working when its only worker is a background agent.**
+  Previously the count was sessions whose status is `busy` or `shell`; a session
+  sitting `waiting` or `idle` while a background agent ground away was counted as
+  not working. That made the agent tally describe sessions the session count left
+  out. Expect the badge number to be slightly higher than before.
+
+### Notes
+
+- History is unchanged: a session with N subagents still counts as one
+  everywhere in the report, the PDF and the archive. Subagent transcripts carry
+  no `turn_duration`, so there is no exact agent time to report and none is
+  invented.
+
 ## [0.3.0] — 2026-08-16
 
 ### Added
