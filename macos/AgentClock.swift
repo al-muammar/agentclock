@@ -552,6 +552,147 @@ func badgeTitle(_ working: Int, _ agents: Int) -> String {
   agents > 0 ? "◐ \(working) (\(agents))" : "◐ \(working)"
 }
 
+// MARK: - Menu contents
+
+/// A trailing path that tells each project apart: the parent, plus more if needed.
+///
+/// A bare basename reads badly for the generic ones. `backend` says nothing about
+/// which backend, and a row you are scanning for reads as a row you are not —
+/// which is exactly how a working session gets missed in a list where it is
+/// plainly present. So the floor is two components, `itle/backend`, and a project
+/// grows further only when two of them would still collide on screen.
+///
+/// Collision is measured over the visible set rather than all of disk, so a label
+/// never lengthens because of a session you cannot see.
+func projectLabels(_ projects: [String]) -> [String: String] {
+  let unique = Set(projects)
+  let parts = Dictionary(
+    uniqueKeysWithValues: unique.map { ($0, $0.split(separator: "/").map(String.init)) })
+
+  var out: [String: String] = [:]
+  for project in unique {
+    let comps = parts[project] ?? []
+    if comps.isEmpty {
+      out[project] = project  // "/" or empty — nothing to shorten
+      continue
+    }
+    // Floor of two: the parent directory is what makes a generic repo name
+    // readable, and paying it always keeps every row shaped the same way.
+    var depth = min(2, comps.count)
+    while depth < comps.count {
+      let candidate = comps.suffix(depth).joined(separator: "/")
+      let collides = unique.contains { other in
+        other != project
+          && (parts[other] ?? []).suffix(depth).joined(separator: "/") == candidate
+      }
+      if !collides { break }
+      depth += 1
+    }
+    out[project] = comps.suffix(depth).joined(separator: "/")
+  }
+  return out
+}
+
+/// One row of the dropdown, as data.
+///
+/// Kept separate from NSMenu so the grouping can be dumped by `--menu` and
+/// asserted in a test, without a status item or a running app. The bug that
+/// prompted this could not be seen from the outside: the badge and the list are
+/// built from the same numbers, so when they disagreed there was no way to tell
+/// which half was wrong.
+struct MenuRow {
+  enum Kind: String {
+    case header
+    case session
+    case agent
+    case separator
+  }
+
+  var kind: Kind
+  var text: String
+  var cwd: String?
+  var dimmed: Bool = false
+}
+
+/// Group the live sessions, and the agents inside them, into dropdown rows.
+///
+/// Every session lands in exactly one group — working, waiting, or idle — so the
+/// groups always sum to the total and the badge can never claim more work than
+/// the list accounts for. The same holds for the parenthetical: the agents
+/// counted in the header are exactly the agent rows drawn underneath.
+func menuRows(
+  sessions: [LiveSession],
+  agents: [String: [LiveSubagent]],
+  workingIds: Set<String>,
+  coolingIds: Set<String>,
+  now: Double
+) -> [MenuRow] {
+  var rows: [MenuRow] = []
+
+  if sessions.isEmpty {
+    rows.append(MenuRow(kind: .header, text: "No Claude Code sessions are running"))
+    return rows
+  }
+
+  let labels = projectLabels(sessions.map(\.project))
+  let label = { (s: LiveSession) in labels[s.project] ?? s.projectLabel }
+  let running = { (s: LiveSession) in (agents[s.sessionId] ?? []).filter(\.running) }
+
+  let working = sessions.filter { workingIds.contains($0.sessionId) }
+    .sorted { $0.startedAt < $1.startedAt }
+  // "waiting" only counts when the session is not already claimed as working;
+  // otherwise a session inside its cooling-down window would be listed twice.
+  let waiting = sessions.filter {
+    !workingIds.contains($0.sessionId) && $0.status == "waiting"
+  }
+  let idle = sessions.filter {
+    !workingIds.contains($0.sessionId) && $0.status != "waiting"
+  }
+
+  let fan = working.reduce(0) { $0 + running($1).count }
+  rows.append(
+    MenuRow(
+      kind: .header,
+      text: fan > 0
+        ? "\(working.count) working · \(fan) \(fan == 1 ? "agent" : "agents")"
+        : "\(working.count) working"))
+
+  for s in working {
+    let cooling = coolingIds.contains(s.sessionId)
+    rows.append(
+      MenuRow(
+        kind: .session,
+        text: "\(cooling ? "◐" : "●")  \(s.label)   \(label(s))   \(duration(now - s.startedAt))",
+        cwd: s.cwd,
+        dimmed: cooling))
+    // Every agent in the badge's parenthetical gets a line here. Type and
+    // elapsed time only — an agent's prompt is the user's own work.
+    for a in running(s) {
+      let since = a.startedAt ?? a.lastWriteAt
+      rows.append(
+        MenuRow(
+          kind: .agent, text: "      └  \(a.agentType ?? "agent")   \(duration(now - since))"))
+    }
+  }
+
+  if !waiting.isEmpty {
+    rows.append(MenuRow(kind: .separator, text: ""))
+    rows.append(MenuRow(kind: .header, text: "\(waiting.count) waiting on you"))
+    for s in waiting {
+      let why = s.waitingFor.map { " — \($0)" } ?? ""
+      rows.append(
+        MenuRow(kind: .session, text: "◑  \(s.label)   \(label(s))\(why)", cwd: s.cwd))
+    }
+  }
+
+  if !idle.isEmpty {
+    rows.append(MenuRow(kind: .separator, text: ""))
+    rows.append(MenuRow(kind: .header, text: "\(idle.count) idle"))
+  }
+
+  return rows
+}
+
 // MARK: - Headless modes
 
 /// Emit the live sessions as JSON. Exists so test/menubar.test.js can compare this
@@ -597,6 +738,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   private var sessions: [LiveSession] = []
   private var subagents: [String: [LiveSubagent]] = [:]
   private var workingIds: Set<String> = []
+  private var coolingIds: Set<String> = []
   private var lastTitle = ""
 
   func applicationDidFinishLaunching(_ note: Notification) {
@@ -628,6 +770,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let agents = readLiveSubagents(for: found)
     let working = smoother.working(found, agents)
     let counted = Set(working.map(\.sessionId))
+    // Computed here, on the same queue that owns the smoother. Asking the smoother
+    // from the main thread while this queue mutates it is a data race on a Swift
+    // dictionary — unsynchronised, and a dictionary being resized mid-read can
+    // return nonsense or trap.
+    let cooling = Set(
+      working.filter { smoother.isCoolingDown($0, agents[$0.sessionId] ?? []) }.map(\.sessionId))
     let title = badgeTitle(working.count, fanOut(found, agents, counted))
 
     DispatchQueue.main.async { [weak self] in
@@ -635,6 +783,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       self.sessions = found
       self.subagents = agents
       self.workingIds = counted
+      self.coolingIds = cooling
       // The load-bearing line. Assigning an unchanged title still forces the status
       // item to redraw; guarding it measured a ~2.8x cut in idle CPU.
       guard title != self.lastTitle else { return }
@@ -648,71 +797,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   /// Built on open, so an unopened menu costs nothing.
   func menuNeedsUpdate(_ menu: NSMenu) {
     menu.removeAllItems()
-    let now = Date().timeIntervalSince1970 * 1000
 
-    let running = { (s: LiveSession) in (self.subagents[s.sessionId] ?? []).filter(\.running) }
-    let working = sessions.filter { workingIds.contains($0.sessionId) }
-      .sorted { $0.startedAt < $1.startedAt }
-    let waiting = sessions.filter { $0.status == "waiting" && !workingIds.contains($0.sessionId) }
-    let others = sessions.filter {
-      !workingIds.contains($0.sessionId) && $0.status != "waiting"
-    }
-
-    if sessions.isEmpty {
-      menu.addItem(disabled("No Claude Code sessions are running"))
-    } else {
-      let fanOut = working.reduce(0) { $0 + running($1).count }
-      let header =
-        fanOut > 0
-        ? "\(working.count) working · \(fanOut) \(fanOut == 1 ? "agent" : "agents")"
-        : "\(working.count) working"
-      menu.addItem(disabled(header))
-      for s in working {
-        let mine = running(s)
-        let cooling = smoother.isCoolingDown(s, subagents[s.sessionId] ?? [])
-        let row = NSMenuItem(
-          title: "\(cooling ? "◐" : "●")  \(s.label)   \(s.projectLabel)   \(duration(now - s.startedAt))",
-          action: #selector(revealSession(_:)), keyEquivalent: "")
-        row.target = self
-        row.representedObject = s.cwd
+    for row in menuRows(
+      sessions: sessions,
+      agents: subagents,
+      workingIds: workingIds,
+      coolingIds: coolingIds,
+      now: Date().timeIntervalSince1970 * 1000)
+    {
+      switch row.kind {
+      case .separator:
+        menu.addItem(.separator())
+      case .header:
+        menu.addItem(disabled(row.text))
+      case .agent:
+        menu.addItem(disabled(row.text))
+      case .session:
+        let item = NSMenuItem(
+          title: row.text, action: #selector(revealSession(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = row.cwd
         // A cooling-down session is counted but not working this instant; dim it so
         // the smoothing is visible rather than a quiet fiction.
-        if cooling {
-          row.attributedTitle = NSAttributedString(
-            string: row.title, attributes: [.foregroundColor: NSColor.secondaryLabelColor])
+        if row.dimmed {
+          item.attributedTitle = NSAttributedString(
+            string: row.text, attributes: [.foregroundColor: NSColor.secondaryLabelColor])
         }
-        menu.addItem(row)
-
-        // Every agent in the badge's parenthetical gets a line here. Type and
-        // elapsed time only — an agent's prompt is the user's own work.
-        for a in mine {
-          let since = a.startedAt ?? a.lastWriteAt
-          let agentRow = NSMenuItem(
-            title: "      └  \(a.agentType ?? "agent")   \(duration(now - since))",
-            action: nil, keyEquivalent: "")
-          agentRow.isEnabled = false
-          menu.addItem(agentRow)
-        }
+        menu.addItem(item)
       }
-    }
-
-    if !waiting.isEmpty {
-      menu.addItem(.separator())
-      menu.addItem(disabled("\(waiting.count) waiting on you"))
-      for s in waiting {
-        let why = s.waitingFor.map { " — \($0)" } ?? ""
-        let row = NSMenuItem(
-          title: "◑  \(s.label)   \(s.projectLabel)\(why)",
-          action: #selector(revealSession(_:)), keyEquivalent: "")
-        row.target = self
-        row.representedObject = s.cwd
-        menu.addItem(row)
-      }
-    }
-
-    if !others.isEmpty {
-      menu.addItem(.separator())
-      menu.addItem(disabled("\(others.count) idle"))
     }
 
     menu.addItem(.separator())
@@ -895,6 +1007,25 @@ if args.contains("--badge") {
   let agents = readLiveSubagents(for: sessions)
   let working = s.working(sessions, agents)
   print(badgeTitle(working.count, fanOut(sessions, agents, Set(working.map(\.sessionId)))))
+  exit(0)
+}
+// Print the dropdown as text. The badge and the list are built from the same
+// numbers, so when they disagree this is how you find out which half is wrong.
+if args.contains("--menu") {
+  let found = readLiveSessions()
+  let agents = readLiveSubagents(for: found)
+  let smoother = Smoother(hold: DEFAULT_HOLD)
+  let working = smoother.working(found, agents)
+  let rows = menuRows(
+    sessions: found,
+    agents: agents,
+    workingIds: Set(working.map(\.sessionId)),
+    coolingIds: Set(
+      working.filter { smoother.isCoolingDown($0, agents[$0.sessionId] ?? []) }.map(\.sessionId)),
+    now: Date().timeIntervalSince1970 * 1000)
+  for row in rows {
+    print(row.kind == MenuRow.Kind.separator ? "  ---" : "  \(row.text)")
+  }
   exit(0)
 }
 
