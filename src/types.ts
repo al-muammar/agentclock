@@ -40,6 +40,40 @@ export interface LiveSession {
   statusUpdatedAt?: number;
 }
 
+/**
+ * One subagent transcript belonging to a live session.
+ *
+ * Claude Code keeps no registry for agents — there is a file per session and
+ * nothing per agent — so this is reconstructed from the transcript the agent
+ * writes. See subagents.ts for how `running` is decided.
+ */
+export interface LiveSubagent {
+  /** The id in the filename, `agent-<agentId>.jsonl`. Opaque, not a name. */
+  agentId: string;
+  /** Agent type as Claude Code recorded it, e.g. "Explore". Absent on old files. */
+  agentType?: string;
+  /** First record timestamp. Only resolved for agents that are still running. */
+  startedAt?: number;
+  /** Last write to the transcript. */
+  lastWriteAt: number;
+  running: boolean;
+}
+
+/**
+ * Is this session doing work?
+ *
+ * Wider than `ACTIVE_STATUSES` on purpose: a session can sit `waiting` or `idle`
+ * while a background subagent grinds away, and calling that "not working" makes
+ * the agent count describe sessions the session count does not include.
+ *
+ * `ACTIVE_STATUSES` itself stays exactly as it is — it describes Claude Code's
+ * status field, unknown values and all, and this builds on top rather than
+ * widening it.
+ */
+export function isWorking(session: LiveSession, agents: LiveSubagent[] = []): boolean {
+  return ACTIVE_STATUSES.has(session.status) || agents.some((a) => a.running);
+}
+
 /** A session reconstructed from its transcript. */
 export interface SessionRecord {
   sessionId: string;

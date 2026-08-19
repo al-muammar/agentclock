@@ -51,9 +51,19 @@ intervals when a session was working.
 
 ## Invariants — don't break these
 
-- **A session with N subagents counts as one.** Subagent transcripts live in
-  `<slug>/<sessionId>/subagents/`; only files directly inside a project slug are
-  enumerated. Never walk into `subagents/`.
+- **A session with N subagents counts as one — in history.** Subagent transcripts
+  live in `<slug>/<sessionId>/subagents/`; the transcript scan enumerates only
+  files directly inside a project slug and never walks into `subagents/`. That is
+  what makes concurrency a count of sessions. The **live** snapshot does read that
+  directory (`subagents.ts`), and feeds nothing into any historical metric — so
+  `stats.ts` and everything downstream still sees one span set per session.
+- **Agents are counted live, never estimated from history.** Subagent transcripts
+  carry no `turn_duration` at all — 0 records across 474 files — so there is no
+  exact agent time to report and none is invented. Liveness comes from three
+  signals, none sufficient alone: a terminal `end_turn` record, the parent's
+  `<task-notification>`, and a 30-minute staleness cap. Freshness alone was
+  measured at a 21% false-negative rate and the terminal record alone leaks 9%
+  phantoms; see `src/subagents.ts` for the numbers.
 - **Merge spans per session before any sweep.** This is what guarantees one
   session can never contribute more than 1 to a concurrency count.
 - **Active time is exact or absent, never estimated.** It comes from Claude
@@ -82,9 +92,9 @@ intervals when a session was working.
   spill onto a second sheet: a section that cannot fit is dropped or summed, and
   `test/pdf.test.js` asserts `/Count 1` and that nothing is drawn off the page.
 - **The menu bar app duplicates the registry rules, and a test holds them equal.**
-  `macos/AgentClock.swift` reimplements `readLiveSessions()` because spawning Node
-  every two seconds costs ~130x more CPU than reading the directory (~130ms vs
-  ~1ms). Change `registry.ts` and you must change the Swift too;
+  `macos/AgentClock.swift` reimplements `readLiveSessions()` and `subagents.ts`
+  because spawning Node every two seconds costs ~130x more CPU than reading the
+  directory (~130ms vs ~1ms). Change either one and you must change the Swift too;
   `test/menubar.test.js` runs both against one fixture and fails if they diverge.
   Keep every fail-open branch — the port must fail toward showing a phantom
   session, exactly as the TypeScript does. It stays ad-hoc signed on purpose:

@@ -8,7 +8,7 @@ import {
   truncate,
   type HourRange,
 } from '../format.js';
-import { ACTIVE_STATUSES, type LiveSession } from '../types.js';
+import { ACTIVE_STATUSES, isWorking, type LiveSession, type LiveSubagent } from '../types.js';
 import type { Stats } from '../stats.js';
 
 const useColor =
@@ -40,7 +40,11 @@ function statusStyle(status: string): (s: string) => string {
 }
 
 /** The live three-way split, plus one line per running session. */
-export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
+export function renderNow(
+  sessions: LiveSession[],
+  anon: Anonymizer,
+  subagents: Map<string, LiveSubagent[]> = new Map(),
+): string {
   const now = Date.now();
   const lines: string[] = [];
 
@@ -48,13 +52,19 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
     return `${c.dim('No Claude Code sessions are running.')}\n`;
   }
 
+  const running = (s: LiveSession) => (subagents.get(s.sessionId) ?? []).filter((a) => a.running);
+
   const counts = new Map<string, number>();
   for (const s of sessions) counts.set(s.status, (counts.get(s.status) ?? 0) + 1);
 
-  const active = sessions.filter((s) => ACTIVE_STATUSES.has(s.status)).length;
+  // "Working" counts a session whose only worker is a background agent, so the
+  // agent tally can never describe sessions this number leaves out.
+  const active = sessions.filter((s) => isWorking(s, running(s))).length;
+  const agents = sessions.reduce((sum, s) => sum + running(s).length, 0);
   const waiting = counts.get('waiting') ?? 0;
   const idle = counts.get('idle') ?? 0;
-  const other = sessions.length - active - waiting - idle;
+  const other =
+    sessions.length - (counts.get('busy') ?? 0) - (counts.get('shell') ?? 0) - waiting - idle;
 
   const parts = [
     c.busy(`${active} working`),
@@ -62,6 +72,7 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
     c.idle(`${idle} idle`),
   ];
   if (other > 0) parts.push(c.waiting(`${other} unknown`));
+  if (agents > 0) parts.push(c.busy(`${agents} ${agents === 1 ? 'agent' : 'agents'}`));
 
   lines.push('');
   lines.push(
@@ -71,7 +82,7 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
 
   const rows = [...sessions].sort((a, b) => {
     const rank = (s: LiveSession) =>
-      ACTIVE_STATUSES.has(s.status) ? 0 : s.status === 'waiting' ? 1 : 2;
+      isWorking(s, running(s)) ? 0 : s.status === 'waiting' ? 1 : 2;
     return rank(a) - rank(b) || a.startedAt - b.startedAt;
   });
 
@@ -84,9 +95,12 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
     Math.max(8, ...rows.map((s) => anon.projectLabel(attribute(s.cwd).project).length)),
   );
 
+  const showAgents = agents > 0;
+  const agentCol = showAgents ? `  ${padStart('AGENTS', 6)}` : '';
+
   lines.push(
     c.dim(
-      `  ${pad('SESSION', nameWidth)}  ${pad('PROJECT', projWidth)}  ${pad('STATE', 9)}  ${padStart('UPTIME', 8)}`,
+      `  ${pad('SESSION', nameWidth)}  ${pad('PROJECT', projWidth)}  ${pad('STATE', 9)}  ${padStart('UPTIME', 8)}${agentCol}`,
     ),
   );
 
@@ -100,14 +114,34 @@ export function renderNow(sessions: LiveSession[], anon: Anonymizer): string {
     const project = truncate(anon.projectLabel(attribute(s.cwd).project), projWidth);
     const state = s.status === 'waiting' && s.waitingFor ? 'waiting' : s.status;
     const uptime = duration(now - s.startedAt);
-    const marker = ACTIVE_STATUSES.has(s.status) ? '●' : s.status === 'waiting' ? '◐' : '○';
+    const mine = running(s);
+    const working = isWorking(s, mine);
+    const marker = working ? '●' : s.status === 'waiting' ? '◐' : '○';
+    // The marker says whether work is happening, the STATE column says what the
+    // session itself reports. A session can be idle with a live agent, and both
+    // halves of that are worth seeing.
+    const markerStyle = working ? c.busy : style;
+    const tally = showAgents
+      ? `  ${c.busy(padStart(mine.length > 0 ? String(mine.length) : '·', 6))}`
+      : '';
 
     lines.push(
-      `  ${style(marker)} ${pad(name, nameWidth - 2)}  ${c.dim(pad(project, projWidth))}  ${style(pad(state, 9))}  ${c.dim(padStart(uptime, 8))}`,
+      `  ${markerStyle(marker)} ${pad(name, nameWidth - 2)}  ${c.dim(pad(project, projWidth))}  ${style(pad(state, 9))}  ${c.dim(padStart(uptime, 8))}${tally}`,
     );
 
     if (s.status === 'waiting' && s.waitingFor) {
       lines.push(`  ${' '.repeat(nameWidth)}  ${c.dim(`↳ ${s.waitingFor}`)}`);
+    }
+
+    // One line per running agent, indented under its session. Type and elapsed
+    // time only — an agent's prompt is the user's own work, and this output gets
+    // pasted into issues and chats.
+    for (const agent of mine) {
+      const label = truncate(agent.agentType ?? 'agent', nameWidth - 4);
+      const since = agent.startedAt ?? agent.lastWriteAt;
+      lines.push(
+        `    ${c.busy('└')} ${pad(label, nameWidth - 4)}  ${' '.repeat(projWidth)}  ${c.dim(pad('running', 9))}  ${c.dim(padStart(duration(now - since), 8))}`,
+      );
     }
   }
 

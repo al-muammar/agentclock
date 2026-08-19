@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  utimesSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,8 +88,84 @@ write('12.abc123.key', 'not json at all');
 // Status missing entirely.
 write('13.json', { pid: LIVE, sessionId: '66666666-0000-0000-0000-000000000000', cwd: '/tmp/p' });
 
+/**
+ * Subagent fixtures for session 1 (`aaaaaaaa…`, busy) and session 2
+ * (`bbbbbbbb…`, idle). Between them they cover every branch of the liveness rule:
+ * a running agent, one that returned, one that only the parent's notification
+ * knows is done, one aborted past the stale cap, and a torn write that must count
+ * rather than vanish. Session 2 is the load-bearing one — it is idle, so it only
+ * appears in the working count because an agent of its own is still going.
+ */
+const BUSY_SESSION = 'aaaaaaaa-0000-0000-0000-000000000000';
+const IDLE_SESSION = 'bbbbbbbb-0000-0000-0000-000000000000';
+const slug = '-tmp-project';
+
+const agentLine = (over = {}) =>
+  JSON.stringify({
+    type: 'assistant',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'x' }],
+      stop_reason: null,
+      ...over.message,
+    },
+    attributionAgent: over.agentType ?? 'Explore',
+    timestamp: new Date(now - 30_000).toISOString(),
+  });
+
+function writeAgent(sessionId, agentId, lines, ageMs) {
+  const dir = path.join(root, 'projects', slug, sessionId, 'subagents');
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `agent-${agentId}.jsonl`);
+  writeFileSync(file, `${lines.join('\n')}\n`);
+  const when = (now - ageMs) / 1000;
+  utimesSync(file, when, when);
+}
+
+const spawnLine = (agentId) =>
+  JSON.stringify({
+    isSidechain: true,
+    agentId,
+    type: 'user',
+    message: { role: 'user', content: 'go' },
+    timestamp: new Date(now - 300_000).toISOString(),
+  });
+
+writeAgent(BUSY_SESSION, 'live1', [spawnLine('live1'), agentLine()], 20_000);
+writeAgent(
+  BUSY_SESSION,
+  'ended',
+  [
+    spawnLine('ended'),
+    agentLine({ message: { stop_reason: 'end_turn' }, agentType: 'general-purpose' }),
+  ],
+  25_000,
+);
+writeAgent(
+  BUSY_SESSION,
+  'torn',
+  [spawnLine('torn'), '{"type":"assistant","message":{"stop_'],
+  15_000,
+);
+writeAgent(BUSY_SESSION, 'gone', [spawnLine('gone'), agentLine()], 45 * 60_000);
+// Finished, but its transcript carries no terminal record — only the parent knows.
+writeAgent(BUSY_SESSION, 'notified', [spawnLine('notified'), agentLine()], 60_000);
+writeFileSync(
+  path.join(root, 'projects', slug, `${BUSY_SESSION}.jsonl`),
+  `${JSON.stringify({
+    type: 'queue-operation',
+    timestamp: new Date(now - 55_000).toISOString(),
+    content:
+      '<task-notification>\n<task-id>notified</task-id>\n<status>completed</status>\n</task-notification>',
+  })}\n`,
+);
+
+writeAgent(IDLE_SESSION, 'background', [spawnLine('background'), agentLine()], 40_000);
+
 process.env['CLAUDE_CONFIG_DIR'] = root;
 const { readLiveSessions } = await import('../dist/registry.js');
+const { readLiveSubagentsFor } = await import('../dist/subagents.js');
+const { isWorking } = await import('../dist/types.js');
 
 test('menu bar app is built', { skip: !runnable }, () => {
   if (!existsSync(binary)) {
@@ -133,9 +217,70 @@ test('--count reports the unsmoothed working total', { skip: !runnable }, () => 
     env: { ...process.env, CLAUDE_CONFIG_DIR: root },
     encoding: 'utf8',
   });
-  // busy + shell + busy-in-a-worktree = 3. waiting, idle and the unknown status
-  // are all live sessions but none of them is working.
-  assert.equal(out.trim(), '3');
+  // busy + shell + busy-in-a-worktree = 3, plus the idle session whose background
+  // agent is still going. Without that fourth, the badge's agent tally would count
+  // work belonging to a session the badge itself says is not working.
+  assert.equal(out.trim(), '4');
+});
+
+test('the badge names the sessions and the agents inside them', { skip: !runnable }, () => {
+  const out = execFileSync(binary, ['--badge'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
+    encoding: 'utf8',
+  });
+  // Four working sessions; the busy one has two live agents (live1 and torn) and
+  // the idle one has its background agent. The other three transcripts have
+  // ended, been notified, or gone stale, and must not appear in the total.
+  assert.equal(out.trim(), '◐ 4 (3)');
+});
+
+test('Swift and TypeScript agree on which agents are running', { skip: !runnable }, async () => {
+  const out = execFileSync(binary, ['--json'], {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
+    encoding: 'utf8',
+  });
+  const swift = JSON.parse(out);
+
+  const sessions = await readLiveSessions();
+  const node = await readLiveSubagentsFor(sessions);
+
+  // Compared on identity and verdict, not on timestamps: mtime and the parsed
+  // start time are read a few milliseconds apart by the two processes.
+  const shape = (list) =>
+    [...list]
+      .map((a) => `${a.agentId}|${a.running}|${a.agentType ?? ''}`)
+      .sort()
+      .join(',');
+
+  for (const session of sessions) {
+    const theirs = swift.find((s) => s.sessionId === session.sessionId);
+    assert.ok(theirs, `Swift lost session ${session.sessionId}`);
+    assert.equal(
+      shape(theirs.agents ?? []),
+      shape(node.get(session.sessionId) ?? []),
+      `the two implementations disagree about the agents in ${session.sessionId}`,
+    );
+  }
+});
+
+test('the liveness rule holds on both sides', { skip: !runnable }, async () => {
+  const sessions = await readLiveSessions();
+  const agents = await readLiveSubagentsFor(sessions);
+  const byId = new Map((agents.get(BUSY_SESSION) ?? []).map((a) => [a.agentId, a.running]));
+
+  assert.equal(byId.get('live1'), true, 'no terminal record and no notification: running');
+  assert.equal(byId.get('ended'), false, 'a terminal end_turn record ends the run');
+  assert.equal(byId.get('notified'), false, "the parent's notification ends the run");
+  assert.equal(byId.get('gone'), false, 'past the stale cap, an aborted agent stops counting');
+  assert.equal(byId.get('torn'), true, 'a torn write must count rather than vanish');
+
+  const idle = sessions.find((s) => s.sessionId === IDLE_SESSION);
+  assert.equal(idle?.status, 'idle');
+  assert.equal(
+    isWorking(idle, agents.get(IDLE_SESSION) ?? []),
+    true,
+    'an idle session with a live background agent is working',
+  );
 });
 
 /**
