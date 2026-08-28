@@ -6,6 +6,8 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-28
+
 ### Added
 
 - Live views now count the subagents running inside each session, not just the
@@ -107,7 +109,8 @@ A session with N subagents counts as one. Active time comes from Claude Code's
 own `turn_duration.durationMs` — it is exact or absent, never estimated.
 Nothing is sent anywhere.
 
-[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.4.0
 [0.3.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.3.0
 [0.2.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.2.0
 [0.1.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.1.0

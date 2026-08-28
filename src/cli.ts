@@ -22,7 +22,7 @@ import {
 } from './render/term.js';
 import { scanTranscripts } from './transcripts.js';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 const HELP = `
   agentclock — how many Claude Code sessions you run, and how many are working
