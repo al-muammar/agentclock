@@ -9,6 +9,7 @@ import {
   rmSync,
   existsSync,
   readFileSync,
+  statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -167,11 +168,23 @@ const { readLiveSessions } = await import('../dist/registry.js');
 const { readLiveSubagentsFor } = await import('../dist/subagents.js');
 const { isWorking } = await import('../dist/types.js');
 
+/**
+ * Rebuild whenever the source is newer, not merely when the binary is absent.
+ * A binary left over from an older version does not know this version's flags,
+ * and an unrecognised flag falls through to `app.run()` — a menu bar app that
+ * never exits. Under `node --test` that is an unbounded hang, not a failure.
+ */
 test('menu bar app is built', { skip: !runnable }, () => {
-  if (!existsSync(binary)) {
+  const built = existsSync(binary) ? statSync(binary).mtimeMs : 0;
+  const newest = ['AgentClock.swift', 'Info.plist', 'Makefile']
+    .map((f) => statSync(path.join(macos, f)).mtimeMs)
+    .reduce((a, b) => Math.max(a, b), 0);
+
+  if (built < newest) {
     execFileSync('make', ['-C', macos], { stdio: 'ignore' });
   }
   assert.ok(existsSync(binary), 'expected make to produce the app bundle');
+  assert.ok(statSync(binary).mtimeMs >= newest, 'the built app is older than its sources');
 });
 
 test('Swift and TypeScript agree on the live session set', { skip: !runnable }, async () => {
