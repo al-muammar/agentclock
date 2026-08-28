@@ -1,0 +1,110 @@
+name: Publish
+
+# The tag is the trigger. `.claude/skills/release/SKILL.md` only ever tags a
+# commit that is already merged and green, and the verify job below refuses
+# anything else — so the tag, the published tarball and the tree CI passed on
+# are the same three things by construction.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+# A publish is irreversible: npm versions are immutable and can only be
+# deprecated, never replaced. Never cancel one in flight.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify the tag
+    runs-on: ubuntu-latest
+    steps:
+      # The ancestry check needs history, which the default shallow clone lacks.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A mistyped tag is the one way a tag push can ship the wrong thing, and
+      # this is the beat that catches it. package.json is enough of an anchor:
+      # `npm test` already holds it equal to package-lock.json, src/cli.ts and
+      # macos/Info.plist, so pinning the tag to it pins the tag to all four.
+      - name: The tag names the version in the tree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json ${pkg}"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} matches package.json ${pkg}"
+
+      # Never publish an unmerged tree. A tag on a local commit names a tree no
+      # review and no CI run ever saw, and once published it cannot be recalled.
+      - name: The tagged commit is merged into main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::${GITHUB_SHA} is not on main — tag the merged commit, never a local one"
+            exit 1
+          fi
+          echo "${GITHUB_SHA} is on main"
+
+      - name: The version is not already published
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if npm view "agentclock@${tag}" version >/dev/null 2>&1; then
+            echo "::error::agentclock@${tag} is already on npm — versions are immutable"
+            exit 1
+          fi
+          echo "agentclock@${tag} is free"
+
+  # The full matrix, on the exact tagged tree: seven legs including the macOS
+  # ones, which are the only place the Swift/TypeScript parity test can run.
+  # Calling the CI workflow rather than restating it keeps one definition of
+  # what green means.
+  ci:
+    name: CI
+    needs: verify
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish to npm
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC for npm trusted publishing — there is no NPM_TOKEN
+      contents: write # gh release create
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+          # Never cache in a release build: the point is to resolve everything
+          # from the registry exactly as a user would.
+          package-manager-cache: false
+
+      # Node 22 bundles npm 10, which predates trusted publishing. Without this
+      # the publish falls back to asking for a token that does not exist.
+      - name: npm with trusted publishing
+        run: npm install -g npm@^11.5.1
+
+      - run: npm ci
+
+      # No --provenance flag: publishing over OIDC from a public repo attaches
+      # provenance on its own. prepublishOnly re-runs check, typecheck and test.
+      - name: Publish
+        run: npm publish
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-notes.mjs "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md"

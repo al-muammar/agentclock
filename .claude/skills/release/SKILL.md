@@ -127,33 +127,55 @@ gh pr merge --squash --delete-branch
 git checkout main && git pull --ff-only origin main
 ```
 
-## 7. Tag the merged commit
+## 7. Tag the merged commit — this publishes
 
 ```sh
 git tag -a v<X.Y.Z> -m "v<X.Y.Z>"
 git push origin v<X.Y.Z>
 ```
 
-Annotated, `v`-prefixed, and created only after the merge — the tag names the
-exact tree CI went green on and npm is about to receive.
+Annotated, `v`-prefixed, and created only after the merge. **Pushing the tag is
+the release.** `.github/workflows/publish.yml` fires on `v*` and does the rest:
+it re-runs the full matrix on the tagged tree, publishes to npm over OIDC, and
+creates the GitHub Release from the CHANGELOG section.
 
-## 8. Publish
+So this is the irreversible step, not `npm publish`. npm versions are immutable
+— a wrong publish can only be deprecated, never replaced — so confirm with the
+user before pushing the tag unless they have already said to go all the way.
 
-Check the payload before sending it, because npm versions are immutable — a
-wrong publish can only be deprecated, never replaced:
+Four guards run before anything is sent, and each fails the release closed:
+
+- the tag must match `package.json` (which `npm test` holds equal to the
+  lockfile, `src/cli.ts` and `macos/Info.plist`, so this pins all four)
+- the tagged commit must be an ancestor of `origin/main`
+- the version must not already exist on npm
+- all seven CI legs must pass on the tagged tree
+
+A mistyped tag therefore costs a failed workflow, not a bad publish. Delete it
+(`git push origin :refs/tags/vX.Y.Z`), fix, tag again.
+
+## 8. Watch it
+
+```sh
+gh run watch "$(gh run list --workflow publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+There is no token and no 2FA prompt: npm authorises the workflow itself through
+GitHub OIDC (trusted publishing), which is also what attaches provenance. If the
+`Publish` step fails on authentication, the trusted publisher registration is
+missing or wrong — it is configured per package on npmjs.com under **Settings →
+Trusted publishers**, and it names the repository *and* the workflow filename,
+so renaming `publish.yml` breaks it.
+
+## 9. Publishing by hand, if the workflow cannot
+
+Only when the pipeline is broken and the user asks for it. The npm account has
+2FA, so an agent cannot do this — hand it over and ask them to run it in the
+session so its output lands in the conversation:
 
 ```sh
 npm pack --dry-run                  # dist/ + bin/ + macos/ + README + LICENSE
-npm publish                         # prepublishOnly re-runs check + typecheck + test
 ```
-
-`npm publish` is outward-facing and irreversible. Confirm with the user
-immediately before running it unless they have already said to go all the way.
-
-**The account has 2FA on, so the publish is the user's to run — always.** An
-agent cannot satisfy a second factor. Hand the step over and ask them to run it
-in the session so its output lands in the conversation:
-
 ```
 ! npm publish
 ```
@@ -163,15 +185,11 @@ the browser: it prints a URL, waits, and completes once the user approves. The
 old `EOTP` failure and an `--otp=<code>` retry belong to npm 9 and earlier — on
 2026-08-28 that stale instruction sent the user hunting for an authenticator
 code that nothing asked for. Only fall back to `--otp=` if npm actually returns
-`EOTP`.
-
-Everything before this step is already done and durable at that point: the tag
-is pushed and CI is green, so the publish is the only thing outstanding.
-
-## 9. GitHub Release
+`EOTP`. Then create the release the workflow would have:
 
 ```sh
-gh release create v<X.Y.Z> --title "v<X.Y.Z>" --notes "<the changelog entry>"
+gh release create v<X.Y.Z> --title "v<X.Y.Z>" \
+  --notes-file <(node scripts/release-notes.mjs <X.Y.Z>)
 ```
 
 ## 10. Verify what actually shipped
@@ -218,7 +236,16 @@ package entirely.
 ## Invariants
 
 - **Never publish an untagged tree, never tag an unmerged one.** Both have
-  happened here; both make "which commit is 0.1.0?" unanswerable.
+  happened here; both make "which commit is 0.1.0?" unanswerable. The pipeline
+  now enforces the second half: publishing is reachable only from a `v*` tag,
+  and only when that tag's commit is an ancestor of `origin/main`.
+- **Pushing the tag is the irreversible act.** It is what reaches npm, and npm
+  versions can never be replaced. Treat `git push origin vX.Y.Z` with the care
+  the old `npm publish` step got, and confirm before running it.
+- **No npm token exists, and none should be added.** The workflow authenticates
+  as itself over GitHub OIDC. A long-lived `NPM_TOKEN` secret would be a
+  standing credential for publishing, and it would also drop the provenance
+  attestation that OIDC publishing attaches for free.
 - **`package.json`, `package-lock.json`, `src/cli.ts` and `macos/Info.plist`
   carry the same version.** Four files, five occurrences, one number — the
   plist has two keys. Adding a fifth home for the version means adding a test

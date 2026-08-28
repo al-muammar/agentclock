@@ -20,9 +20,14 @@ it. Delete a linked worktree without unlinking and `agentclock` dangles.
 ## Releasing
 
 `.claude/skills/release/SKILL.md` is the whole procedure: bump, changelog,
-release PR, CI, tag the merged commit, publish, GitHub Release. Two things it
-exists to stop you forgetting — the version lives in **`package.json`,
-`package-lock.json`, `src/cli.ts` and `macos/Info.plist`** and all four must
+release PR, CI, then tag. **Pushing a `v*` tag is what publishes** —
+`.github/workflows/publish.yml` re-runs the full matrix on the tagged tree, sends
+it to npm over GitHub OIDC (no token, provenance attached) and writes the GitHub
+Release from the CHANGELOG section. It refuses a tag that disagrees with
+`package.json`, one whose commit is not on `main`, and a version already on npm.
+Two more things the skill exists to stop you forgetting — the version lives in
+**`package.json`, `package-lock.json`, `src/cli.ts` and `macos/Info.plist`** and
+all four must
 agree (`--version` reads the constant, not the manifest, so the manifest stays
 out of the bundle; the plist carries it twice and is the easy one to miss, since
 a stale value still builds and runs. `test/cli.test.js` and
