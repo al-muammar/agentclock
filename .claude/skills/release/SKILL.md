@@ -21,7 +21,6 @@ Stop and report rather than working around any of these.
 git rev-parse --abbrev-ref HEAD        # must be main
 git status --porcelain                 # must be empty of tracked changes
 git fetch origin && git status -sb     # must not be behind origin/main
-npm whoami                             # must print the publishing account
 gh auth status                         # must be logged in
 npm view agentclock version            # what is live right now
 ```
@@ -29,6 +28,12 @@ npm view agentclock version            # what is live right now
 The last one matters: the git tag history is not the source of truth for what
 shipped. 0.1.0 was published from a tree that was never tagged, so a release
 that trusts `git describe` alone can pick a version that is already taken.
+
+**Do not gate the release on `npm whoami`.** It returns `401 Unauthorized` from
+an agent shell even when `~/.npmrc` holds a valid token and the user can publish
+fine — on 2026-08-28 that reading stalled a release that was in fact ready.
+Registry auth is the user's to prove, and it proves itself in step 8 or not at
+all. `npm view` needs no auth and is the only registry call worth making here.
 
 ## 2. Confirm what is actually in the release
 
@@ -145,14 +150,20 @@ npm publish                         # prepublishOnly re-runs check + typecheck +
 `npm publish` is outward-facing and irreversible. Confirm with the user
 immediately before running it unless they have already said to go all the way.
 
-**The account has 2FA on, so `npm publish` will fail with `EOTP` when run from
-here.** An agent cannot supply the one-time password. Do not retry, and do not
-try to route around it — hand the step to the user and ask them to run it in
-the session so its output lands in the conversation:
+**The account has 2FA on, so the publish is the user's to run — always.** An
+agent cannot satisfy a second factor. Hand the step over and ask them to run it
+in the session so its output lands in the conversation:
 
 ```
-! npm publish --otp=<code from the authenticator>
+! npm publish
 ```
+
+Plain `npm publish`, with no `--otp`. npm 11 authorises interactively through
+the browser: it prints a URL, waits, and completes once the user approves. The
+old `EOTP` failure and an `--otp=<code>` retry belong to npm 9 and earlier — on
+2026-08-28 that stale instruction sent the user hunting for an authenticator
+code that nothing asked for. Only fall back to `--otp=` if npm actually returns
+`EOTP`.
 
 Everything before this step is already done and durable at that point: the tag
 is pushed and CI is green, so the publish is the only thing outstanding.
