@@ -30,9 +30,11 @@ endif
 
 all: $(BUNDLE)
 
-$(BUNDLE): $(APP).swift Info.plist
+SOURCES  := $(APP).swift HUD.swift
+
+$(BUNDLE): $(SOURCES) Info.plist
 	@mkdir -p $(BUNDLE)/Contents/MacOS
-	swiftc -O -target $(TARGET) -o $(BIN) $(APP).swift
+	swiftc -O -target $(TARGET) -o $(BIN) $(SOURCES)
 	@cp Info.plist $(BUNDLE)/Contents/Info.plist
 	@printf 'APPL????' > $(BUNDLE)/Contents/PkgInfo
 	@# Re-sign after assembling so the seal covers Info.plist, not just the binary.
@@ -43,7 +45,7 @@ $(BUNDLE): $(APP).swift Info.plist
 
 # Type-check only. Used by CI, which must not link or launch anything.
 check:
-	swiftc -typecheck -target $(TARGET) $(APP).swift
+	swiftc -typecheck -target $(TARGET) $(SOURCES)
 
 install: $(BUNDLE)
 	@osascript -e 'quit app "$(APP)"' 2>/dev/null || true

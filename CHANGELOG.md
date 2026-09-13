@@ -6,6 +6,32 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The macOS app now lives on the **right edge of your screen** rather than in the
+  menu bar: a narrow black tab flush against the edge — rounded on its left side,
+  square where it meets the edge — with a teal dot per working session stacked one
+  above the next, a number for the idle ones, and a ring for
+  the limit closest to running out. Point at it and it opens into the full readout
+  — every quota scope with its reset countdown, each working session with its
+  project, uptime, spend and agents, and anything waiting on you pulled to the top.
+  Click to pin it open, click a row to reveal that session in Finder, right-click
+  for the settings.
+- The strip fades back when nothing is working, is draggable along the edge and
+  remembers where you put it, stays visible over full-screen apps, and never takes
+  focus. It needs no macOS permissions at all.
+- Quota appears at the foot of both the strip and the card, with the percentage
+  and the reset countdown for your session and weekly limits. The strip follows the
+  **session limit** — the five-hour window — because across a working day the weekly
+  number barely moves. The menu bar badge still follows whichever limit is closest
+  to running out.
+
+### Changed
+
+- *Show* in the menu picks where the numbers appear: on the screen edge (the new
+  default), in the menu bar as before, or both at once. The menu bar badge itself
+  is unchanged.
+
 ## [0.5.0] — 2026-09-14
 
 ### Added

@@ -35,14 +35,17 @@ const sessions = path.join(root, 'sessions');
 mkdirSync(sessions, { recursive: true });
 
 /**
- * Two agentclock state directories, because the badge changes shape depending on
- * whether a quota snapshot exists. Pointing AGENTCLOCK_DIR at a fixture is also
- * what stops these assertions depending on the quota of whoever runs the tests.
+ * Three agentclock state directories: the badge changes shape depending on whether
+ * a quota snapshot exists, and the badge and the HUD follow different scopes, so
+ * one fixture is built to make them disagree. Pointing AGENTCLOCK_DIR at a fixture
+ * is also what stops these assertions depending on the quota of whoever runs them.
  */
 const stateEmpty = path.join(root, 'state-empty');
 const stateQuota = path.join(root, 'state-quota');
+const stateSplit = path.join(root, 'state-split');
 mkdirSync(stateEmpty, { recursive: true });
 mkdirSync(stateQuota, { recursive: true });
+mkdirSync(stateSplit, { recursive: true });
 
 /** Run the app headless against the fixtures. */
 const runApp = (args, state = stateEmpty) =>
@@ -207,6 +210,22 @@ const QUOTA_FIXTURE = {
 };
 writeFileSync(path.join(stateQuota, 'usage.json'), JSON.stringify(QUOTA_FIXTURE));
 
+/**
+ * A snapshot where the binding scope is NOT the five-hour one: the weekly limit is
+ * nearly gone while the session window is barely touched. In QUOTA_FIXTURE the two
+ * coincide, so only this one can tell the badge's scope from the HUD's.
+ */
+const SPLIT_FIXTURE = {
+  v: 1,
+  fetchedAt: now - 30_000,
+  scopes: [
+    { key: 'five_hour', label: 'session limit', used: 20, left: 80, resetsAt: now + 3_600_000 },
+    { key: 'seven_day', label: 'weekly limit', used: 88, left: 12, resetsAt: now + 200_000_000 },
+  ],
+  sessions: [],
+};
+writeFileSync(path.join(stateSplit, 'usage.json'), JSON.stringify(SPLIT_FIXTURE));
+
 process.env['CLAUDE_CONFIG_DIR'] = root;
 const { readLiveSessions } = await import('../dist/registry.js');
 const { readLiveSubagentsFor } = await import('../dist/subagents.js');
@@ -220,7 +239,7 @@ const { isWorking } = await import('../dist/types.js');
  */
 test('menu bar app is built', { skip: !runnable }, () => {
   const built = existsSync(binary) ? statSync(binary).mtimeMs : 0;
-  const newest = ['AgentClock.swift', 'Info.plist', 'Makefile']
+  const newest = ['AgentClock.swift', 'HUD.swift', 'Info.plist', 'Makefile']
     .map((f) => statSync(path.join(macos, f)).mtimeMs)
     .reduce((a, b) => Math.max(a, b), 0);
 
@@ -286,6 +305,56 @@ test('the badge appends the binding limit when a snapshot exists', { skip: !runn
   // 42% is the five_hour scope — the lowest of the three, so the one that decides
   // when work stops. Not the first in the file, and not the weekly headline.
   assert.equal(runApp(['--badge'], stateQuota).trim(), '◐ 4 (3) · 42%');
+});
+
+/**
+ * The HUD draws its pill rather than typesetting it, so --hud renders the same
+ * state as a string. The point of asserting on it is not the glyphs: it is that
+ * two renderers of one Snapshot cannot drift apart in what they think is working.
+ */
+test('the HUD pill and the badge count the same sessions', { skip: !runnable }, () => {
+  const hud = runApp(['--hud'], stateQuota).trim();
+  const working = Number(runApp(['--count']).trim());
+
+  const dots = (hud.match(/[●◐]/g) ?? []).length;
+  assert.equal(dots, working, 'one dot per working session, same four the badge counts');
+  assert.ok(
+    runApp(['--badge'], stateQuota).trim().startsWith(`◐ ${working}`),
+    'the badge leads with the same total',
+  );
+  // In this fixture the five-hour scope is also the binding one, so both renderers
+  // land on 42%. What that costs them apart is the next test.
+  assert.ok(hud.endsWith('42%'), 'the pill ends on the session limit');
+});
+
+/**
+ * The badge and the tab deliberately follow different scopes, and this is the only
+ * fixture that can tell them apart.
+ *
+ * The badge is one line with no room to say which limit it means, so it takes the
+ * one closest to exhaustion. The tab is read all day, and the weekly limit barely
+ * moves across a working day — following the minimum would pin it to a number that
+ * says nothing about whether you can keep going this afternoon.
+ */
+test('the badge follows the binding limit, the tab follows the session one', {
+  skip: !runnable,
+}, () => {
+  assert.equal(
+    runApp(['--badge'], stateSplit).trim(),
+    '◐ 4 (3) · 12%',
+    'the badge takes the weekly limit, because it is the one about to bite',
+  );
+  assert.ok(
+    runApp(['--hud'], stateSplit).trim().endsWith('80%'),
+    'the tab takes the five-hour window, not the minimum',
+  );
+});
+
+test('the HUD pill shows no quota it does not have', { skip: !runnable }, () => {
+  // stateEmpty has no usage.json at all, which is every install before the first
+  // `agentclock usage`. A pill that invented a percentage there would be the worst
+  // kind of wrong, because it would look right.
+  assert.ok(!runApp(['--hud']).includes('%'), 'no snapshot, no percentage');
 });
 
 test('Swift reads the quota snapshot the way TypeScript wrote it', { skip: !runnable }, () => {
@@ -388,6 +457,10 @@ test('the npm package ships the menu bar sources but never a built binary', () =
   const files = JSON.parse(listed)[0].files.map((f) => f.path);
 
   assert.ok(files.includes('macos/AgentClock.swift'), 'the Swift source must ship');
+  assert.ok(
+    files.includes('macos/HUD.swift'),
+    'the HUD source must ship too, or it will not build',
+  );
   assert.ok(files.includes('macos/Makefile'), 'the Makefile must ship');
   assert.ok(files.includes('macos/Info.plist'), 'the bundle plist must ship');
 
