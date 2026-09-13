@@ -6,6 +6,61 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-14
+
+### Added
+
+- `agentclock usage` reports how much of your quota is left: the limit closest to
+  running out, then every scope the server knows about with its reset time. An
+  unfamiliar limit shows up under its own key rather than being hidden.
+- The same number rides on the menu bar badge — `◐ 4 (9) · 42%` — with the full
+  breakdown in the dropdown. The badge is unchanged until you have run
+  `agentclock usage` at least once.
+- Underneath the quota, what your live sessions are actually spending: exact
+  output and cache-read token counts read from the transcripts on your disk, plus
+  how much of each session's output came from subagents working inside it.
+  Subagent tokens roll into their parent and never become a session of their own.
+- `--cached` reports the last snapshot without fetching; `--json` gives you the
+  lot. `agentclock now` picks up a one-line quota summary when a snapshot exists,
+  and never fetches on its own.
+
+### Changed
+
+- **agentclock now makes one network call.** The invariant was "no telemetry, no
+  network calls, ever"; it is now "one network call, and only this one".
+  `agentclock usage` asks Anthropic's `/api/oauth/usage` — the endpoint Claude
+  Code's own `/usage` calls — using the credential Claude Code already stores in
+  your Keychain, and sends nothing but that token. Every other number in the tool
+  is still read from files on your disk. There is still no telemetry, no third
+  party, and nothing about your code, your projects or your sessions leaves the
+  machine.
+
+  The exception exists because remaining quota is the one number that is not on
+  disk anywhere, and cannot be estimated: across 40 recorded limit hits the
+  five-hour window held anywhere from 2,745 to 1,053,232 output tokens when the
+  limit fired — a 380× spread with no threshold in it. A local guess would warn
+  constantly and stay silent when it mattered, so there isn't one.
+
+  The first run prompts macOS for access to the Claude Code credential, through
+  Apple-signed `/usr/bin/security`. Choose "Always Allow" and it won't ask again.
+  Every other command still works with no credential at all.
+
+### Notes
+
+- The token is read, used and dropped — never logged, never cached, never written
+  to disk. The snapshot in `~/.agentclock/usage.json` holds percentages, reset
+  times and token counts.
+- Everything fails open. A dead endpoint, an expired credential or a denied
+  Keychain prompt shows the last snapshot with its age; a corrupt one costs the
+  percentage and never the session count.
+- The menu bar app still makes no network calls of its own. It runs
+  `agentclock usage` once a minute and reads the snapshot on its normal
+  two-second tick, which costs about 1.3% of one core on top of the app's own
+  tenth of a percent — and only once you have used the command.
+- `/api/oauth/usage` is internal to Claude Code and carries no compatibility
+  promise. Parsing is deliberately defensive: an unrecognised shape costs the
+  quota figures, not the run.
+
 ## [0.4.0] — 2026-08-28
 
 ### Added
@@ -106,10 +161,12 @@ First public release.
 ### Notes
 
 A session with N subagents counts as one. Active time comes from Claude Code's
-own `turn_duration.durationMs` — it is exact or absent, never estimated.
-Nothing is sent anywhere.
+own `turn_duration.durationMs` — it is exact or absent, never estimated. Only
+`agentclock usage` touches the network, and only to read your own quota; nothing
+about your code, your projects or your sessions is sent anywhere.
 
-[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.5.0
 [0.4.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.4.0
 [0.3.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.3.0
 [0.2.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.2.0
