@@ -25,7 +25,7 @@ import {
 import { scanTranscripts } from './transcripts.js';
 import { readCached, refreshUsage } from './usagecache.js';
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 
 const HELP = `
   agentclock — how many Claude Code sessions you run, and how many are working
