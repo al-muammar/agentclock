@@ -34,6 +34,23 @@ const root = mkdtempSync(path.join(tmpdir(), 'agentclock-menubar-'));
 const sessions = path.join(root, 'sessions');
 mkdirSync(sessions, { recursive: true });
 
+/**
+ * Two agentclock state directories, because the badge changes shape depending on
+ * whether a quota snapshot exists. Pointing AGENTCLOCK_DIR at a fixture is also
+ * what stops these assertions depending on the quota of whoever runs the tests.
+ */
+const stateEmpty = path.join(root, 'state-empty');
+const stateQuota = path.join(root, 'state-quota');
+mkdirSync(stateEmpty, { recursive: true });
+mkdirSync(stateQuota, { recursive: true });
+
+/** Run the app headless against the fixtures. */
+const runApp = (args, state = stateEmpty) =>
+  execFileSync(binary, args, {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: root, AGENTCLOCK_DIR: state },
+    encoding: 'utf8',
+  });
+
 // This test process is guaranteed alive, so it stands in for a running session.
 const LIVE = process.pid;
 // macOS caps pids well below this, so it is guaranteed dead.
@@ -163,6 +180,33 @@ writeFileSync(
 
 writeAgent(IDLE_SESSION, 'background', [spawnLine('background'), agentLine()], 40_000);
 
+/**
+ * A quota snapshot exactly as src/usagecache.ts writes it, including an
+ * unrecognised scope. The Swift reader must carry that scope through rather than
+ * drop it, for the same reason registry.ts carries an unknown session status.
+ */
+const QUOTA_FIXTURE = {
+  v: 1,
+  fetchedAt: now - 30_000,
+  scopes: [
+    { key: 'five_hour', label: 'session limit', used: 58, left: 42, resetsAt: now + 3_600_000 },
+    { key: 'seven_day', label: 'weekly limit', used: 12, left: 88, resetsAt: now + 200_000_000 },
+    { key: 'nimbus_quill', label: 'nimbus quill', used: 0, left: 100 },
+  ],
+  sessions: [
+    {
+      sessionId: BUSY_SESSION,
+      input: 4,
+      output: 123_456,
+      cacheCreation: 900,
+      cacheRead: 7_000_000,
+      messages: 12,
+      subagentOutput: 4_321,
+    },
+  ],
+};
+writeFileSync(path.join(stateQuota, 'usage.json'), JSON.stringify(QUOTA_FIXTURE));
+
 process.env['CLAUDE_CONFIG_DIR'] = root;
 const { readLiveSessions } = await import('../dist/registry.js');
 const { readLiveSubagentsFor } = await import('../dist/subagents.js');
@@ -188,10 +232,7 @@ test('menu bar app is built', { skip: !runnable }, () => {
 });
 
 test('Swift and TypeScript agree on the live session set', { skip: !runnable }, async () => {
-  const out = execFileSync(binary, ['--json'], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
-    encoding: 'utf8',
-  });
+  const out = runApp(['--json']);
   const swift = JSON.parse(out);
   const node = await readLiveSessions();
 
@@ -213,10 +254,7 @@ test('both drop daemons, dead pids and unparseable files', { skip: !runnable }, 
 });
 
 test('an unknown status is carried verbatim by both', { skip: !runnable }, async () => {
-  const out = execFileSync(binary, ['--json'], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
-    encoding: 'utf8',
-  });
+  const out = runApp(['--json']);
   const swift = JSON.parse(out);
   const odd = swift.find((s) => s.sessionId === 'eeeeeeee-0000-0000-0000-000000000000');
   assert.equal(odd?.status, 'sleeping', 'unknown status must not be coerced');
@@ -226,10 +264,7 @@ test('an unknown status is carried verbatim by both', { skip: !runnable }, async
 });
 
 test('--count reports the unsmoothed working total', { skip: !runnable }, () => {
-  const out = execFileSync(binary, ['--count'], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
-    encoding: 'utf8',
-  });
+  const out = runApp(['--count']);
   // busy + shell + busy-in-a-worktree = 3, plus the idle session whose background
   // agent is still going. Without that fourth, the badge's agent tally would count
   // work belonging to a session the badge itself says is not working.
@@ -237,21 +272,63 @@ test('--count reports the unsmoothed working total', { skip: !runnable }, () => 
 });
 
 test('the badge names the sessions and the agents inside them', { skip: !runnable }, () => {
-  const out = execFileSync(binary, ['--badge'], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
-    encoding: 'utf8',
-  });
+  const out = runApp(['--badge']);
   // Four working sessions; the busy one has two live agents (live1 and torn) and
   // the idle one has its background agent. The other three transcripts have
   // ended, been notified, or gone stale, and must not appear in the total.
+  //
+  // Run against the state directory with no quota snapshot, so this is also the
+  // guarantee that the badge is byte-for-byte what it was before quota existed.
   assert.equal(out.trim(), '◐ 4 (3)');
 });
 
+test('the badge appends the binding limit when a snapshot exists', { skip: !runnable }, () => {
+  // 42% is the five_hour scope — the lowest of the three, so the one that decides
+  // when work stops. Not the first in the file, and not the weekly headline.
+  assert.equal(runApp(['--badge'], stateQuota).trim(), '◐ 4 (3) · 42%');
+});
+
+test('Swift reads the quota snapshot the way TypeScript wrote it', { skip: !runnable }, () => {
+  const swift = JSON.parse(runApp(['--usage'], stateQuota));
+
+  assert.equal(swift.binding, 'five_hour', 'the binding scope is the closest to exhaustion');
+  assert.deepEqual(
+    swift.scopes.map((s) => [s.key, s.left]),
+    QUOTA_FIXTURE.scopes.map((s) => [s.key, s.left]),
+    'every scope survives the round trip, in order',
+  );
+  assert.equal(
+    swift.scopes.find((s) => s.key === 'nimbus_quill').label,
+    'nimbus quill',
+    'an unrecognised scope is carried, not dropped',
+  );
+  assert.equal(swift.fetchedAt, QUOTA_FIXTURE.fetchedAt);
+
+  const burn = swift.sessions.find((s) => s.sessionId === BUSY_SESSION);
+  assert.equal(burn.output, 123_456, 'per-session burn round-trips');
+  assert.equal(burn.cacheRead, 7_000_000);
+});
+
+test('a malformed snapshot leaves the badge intact', { skip: !runnable }, () => {
+  const broken = path.join(root, 'state-broken');
+  mkdirSync(broken, { recursive: true });
+  writeFileSync(path.join(broken, 'usage.json'), '{"v":1,"scopes":[{"key":');
+
+  // Failing open matters more here than anywhere: a corrupt cache must cost the
+  // percentage, never the session count.
+  assert.equal(runApp(['--badge'], broken).trim(), '◐ 4 (3)');
+  assert.deepEqual(JSON.parse(runApp(['--usage'], broken)).sessions, []);
+});
+
+test('a snapshot from a future schema version is ignored', { skip: !runnable }, () => {
+  const future = path.join(root, 'state-future');
+  mkdirSync(future, { recursive: true });
+  writeFileSync(path.join(future, 'usage.json'), JSON.stringify({ ...QUOTA_FIXTURE, v: 2 }));
+  assert.equal(runApp(['--badge'], future).trim(), '◐ 4 (3)', 'v2 is not read as v1');
+});
+
 test('Swift and TypeScript agree on which agents are running', { skip: !runnable }, async () => {
-  const out = execFileSync(binary, ['--json'], {
-    env: { ...process.env, CLAUDE_CONFIG_DIR: root },
-    encoding: 'utf8',
-  });
+  const out = runApp(['--json']);
   const swift = JSON.parse(out);
 
   const sessions = await readLiveSessions();

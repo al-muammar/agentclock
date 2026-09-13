@@ -17,6 +17,15 @@ test('a bare word is the command', () => {
   assert.equal(parse(['now']).options.command, 'now');
   assert.equal(parse(['stats']).options.command, 'stats');
   assert.equal(parse(['pdf']).options.command, 'pdf');
+  assert.equal(parse(['usage']).options.command, 'usage');
+});
+
+test('usage fetches by default and --cached does not', () => {
+  // The default has to be the fetch: a quota number that silently came off disk
+  // is the one kind of wrong this command cannot afford.
+  assert.equal(parse(['usage']).options.cached, false);
+  assert.equal(parse(['usage', '--cached']).options.cached, true);
+  assert.equal(parse(['--cached', 'usage']).options.command, 'usage');
 });
 
 test('menubar takes a second bare word as its subcommand', () => {

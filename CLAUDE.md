@@ -43,6 +43,10 @@ transcripts.ts  ~/.claude/projects/**/*.jsonl   → historical spans
 spans.ts        merge / clip
 stats.ts        spans → concurrency, days, projects, timeline
 archive.ts      ~/.agentclock/archive.jsonl        → history past Claude's 30-day sweep
+credentials.ts  macOS Keychain                 → the OAuth token Claude Code stores
+quota.ts        /api/oauth/usage               → how much quota is left (the one fetch)
+burn.ts         transcripts, from a cursor     → exact tokens per live session
+usagecache.ts   ~/.agentclock/usage.json       → both of those, for the menu bar to read
 render/         term.ts (ANSI) · html.ts + svg.ts (self-contained report)
                 pdf.ts (PDF primitives) + onepager.ts (one-page summary)
 
@@ -102,7 +106,15 @@ intervals when a session was working.
   directory (~130ms vs ~1ms). Change either one and you must change the Swift too;
   `test/menubar.test.js` runs both against one fixture and fails if they diverge.
   Keep every fail-open branch — the port must fail toward showing a phantom
-  session, exactly as the TypeScript does. It stays ad-hoc signed on purpose:
+  session, exactly as the TypeScript does. **Quota is the deliberate exception to
+  that duplication:** the Swift only *reads* `~/.agentclock/usage.json`, and the
+  fetch, the credential and the response parsing stay in TypeScript. The 130x
+  argument is about cadence, not about spawning — quota moves on five-hour
+  boundaries, so the app shells out once a minute (~0.78s of CPU per refresh, about
+  1.3% of a core; the same work on the two-second tick would be 40%) and reads the
+  file every two seconds. Do not port the fetch into Swift; that would put a
+  network client and a credential reader behind a second implementation nothing
+  holds equal. It stays ad-hoc signed on purpose:
   locally compiled code is never quarantined, so there is no Gatekeeper prompt and
   no paid certificate. That rules out `SMAppService`, which refuses ad-hoc
   signatures — launch-at-login writes a plain Aqua LaunchAgent instead.
@@ -118,7 +130,27 @@ intervals when a session was working.
   every turn boundary, so a session counts until it has been quiet for the hold
   window. Sessions in that tail render dimmed; never let the count claim work that
   the list does not account for.
-- **Nothing leaves the machine.** No telemetry, no network calls, ever.
+- **One network call, and only this one.** `agentclock usage` asks Anthropic's
+  `/api/oauth/usage` — the endpoint Claude Code's own `/usage` calls — for your
+  quota, with the credential Claude Code already stores. It sends nothing but that
+  token. No telemetry, no third party, and nothing about your code, your projects
+  or your sessions ever leaves the machine; every other number in this tool is
+  read from files Claude Code already wrote. The exception exists because
+  remaining quota is genuinely not on disk anywhere, and cannot be estimated: across
+  40 recorded limit hits the five-hour window held between 2,745 and 1,053,232
+  output tokens, a 380x spread with no threshold in it. Adding a second endpoint
+  needs a reason at least this good.
+- **Take the credential by name, never by search.** The Keychain item
+  `Claude Code-credentials` is one blob holding *several* services' secrets: beside
+  `claudeAiOauth` it carries an `mcpOAuth` map with an access token per
+  authenticated MCP server. A "first `accessToken` wins" walk picks whichever key
+  sorts first and sends a third party's bearer token to api.anthropic.com — that
+  bug was written and caught here. `src/credentials.ts` reads exactly
+  `claudeAiOauth.accessToken` or fails, and `test/usage.test.js` holds it there.
+- **Utilization is a percent, not a fraction.** `utilization: 3` means 3% used.
+  The same response's `limits[]` array says `percent: 3` for that window, which is
+  how to check. Scaling it by 100 turns an almost untouched quota into a saturated
+  meter — the worst direction for this number to be wrong in.
 
 ## Conventions
 
@@ -133,7 +165,13 @@ intervals when a session was working.
 ## Verifying a change
 
 - `npm test` must pass. New behaviour needs a test in the matching file:
-  `transcripts` · `render` · `pdf` · `archive` · `timeline` · `core` · `cli`.
+  `transcripts` · `render` · `pdf` · `archive` · `timeline` · `core` · `cli` ·
+  `usage` (quota parsing, credential targeting, token dedup).
+- **Changed quota parsing? Check it against a real response, not the fixture.**
+  `node -e` the endpoint and read the JSON: the fixture is a copy of a shape with
+  no compatibility promise, and the two ways to get this wrong — a percent read as
+  a fraction, a scope dropped for being unfamiliar — both look fine in a test that
+  only ever sees the fixture.
 - **Changed the report? Render it and look at it, in both themes.** Markup
   checks alone missed chart tracks going white on dark — the fix was declaring
   `color-scheme: light dark`.

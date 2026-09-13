@@ -45,6 +45,7 @@ counts as working, because it is.
 ```sh
 agentclock                # build the dashboard and open it
 agentclock now            # what's running right now
+agentclock usage          # how much of your quota is left
 agentclock watch          # live view, refreshing in place
 agentclock timeline       # per-day activity timeline
 agentclock stats          # historical summary in the terminal
@@ -78,6 +79,40 @@ Zoom and the selector are the only things that use script; it is inline, and the
 report still makes no network requests. With scripting off the full-day timeline
 renders and days still expand.
 
+### How much is left
+
+```sh
+agentclock usage
+```
+
+```
+  97% left of your session limit   resets in 4h 16m
+
+  session limit  ██████████   97% left   resets in 4h 16m
+  weekly limit   ██████████   98% left   resets in 6d 14h
+
+  TOKENS IN LIVE SESSIONS
+  SESSION                    OUTPUT   CACHE RD    AGENTS
+  api-retry-backoff-4c         244k        66M         ·
+  flaky-test-triage-e1          95k        15M       33k
+                               339k                total
+```
+
+The headline is whichever limit binds first — the one closest to running out,
+which is the one that decides when work stops. Below it, every scope the server
+reports, including ones agentclock doesn't have a name for: an unfamiliar limit
+shows up under its own key rather than being hidden.
+
+Underneath, what your live sessions are actually spending. Those are exact token
+counts read from the transcripts on your disk — output, cache reads, and how much
+of the output came from subagents working inside each session. Subagent tokens are
+rolled into their parent, never counted as a session of their own.
+
+The quota half needs the network and your Claude Code credential; see
+[Privacy](#privacy). `--cached` reports the last snapshot without fetching, and
+`--json` gives you the lot. When a fetch can't happen, the last snapshot is shown
+with its age rather than nothing at all.
+
 ### The one-pager
 
 ```sh
@@ -102,9 +137,11 @@ agentclock menubar uninstall   # remove it again
 ```
 
 Puts `◐ 4` in the menu bar: how many sessions are working right now, and `◐ 4 (9)`
-when there are subagents running inside them. Click it for the list — which
-sessions, in which projects, for how long, and which agents each one has out —
-plus *Open dashboard*, *Launch at login* and a smoothing setting.
+when there are subagents running inside them. Once you have run `agentclock usage`
+it also carries the limit closest to running out — `◐ 4 (9) · 42%`. Click it for
+the quota breakdown, then the list — which sessions, in which projects, for how
+long, what each has spent, and which agents it has out — plus *Open dashboard*,
+*Launch at login* and a smoothing setting.
 
 The app ships as source and is compiled on your machine — one `swiftc` call,
 about five seconds. That is deliberate: code compiled locally is never
@@ -118,6 +155,15 @@ is not part of the npm package and `npx agentclock` never starts it. It costs
 about **20 MB of memory and a tenth of a percent of one core**, because it reads
 `~/.claude/sessions` directly rather than running the CLI on a timer: ~1 ms per
 refresh against ~130 ms to spawn Node.
+
+The app itself makes no network calls. For quota it runs `agentclock usage` once a
+minute and reads the snapshot from `~/.agentclock/usage.json` on its normal
+two-second tick, so the fetch, the credential and the parsing all stay in one place
+instead of being reimplemented in Swift. Quota moves on five-hour boundaries, so
+once a minute is plenty. That refresh costs about **0.8 seconds of CPU**, or
+roughly 1.3% of one core at that cadence — on top of the app's own tenth of a
+percent, and only once you have used `agentclock usage`. On the two-second tick the
+same work would be 40% of a core, which is why it isn't there.
 
 The count is **smoothed**: a session keeps counting until it has been quiet for 30
 seconds, so the number rises the instant work starts and falls only once an agent
@@ -200,7 +246,30 @@ tool-neutral: the model it's built on — sessions, spans of real work, one coun
 session regardless of subagents — isn't specific to Claude Code, so other agent CLIs
 can be added as readers without reshaping anything downstream.
 
-Nothing is sent anywhere. Everything stays on your machine.
+### Privacy
+
+Everything except `agentclock usage` is read from files on your disk and goes
+nowhere. There is no telemetry, and nothing about your code, your projects or your
+sessions is ever sent anywhere.
+
+`agentclock usage` is the one command that makes a network call. It asks
+Anthropic's `/api/oauth/usage` — the same endpoint Claude Code's own `/usage`
+uses — for your remaining quota, sending only the OAuth token Claude Code has
+already stored in your Keychain. It is read-only: agentclock never writes to that
+credential, and the token is never logged, never cached and never written to disk.
+The cache it does write, `~/.agentclock/usage.json`, holds percentages, reset times
+and token counts.
+
+The reason for the exception is that remaining quota is the one number that is not
+on your disk. It is a server-side accounting of your token use under a weighting
+that isn't published, and it can't be reconstructed locally: across 40 recorded
+limit hits, the five-hour window held anywhere from 2,745 to 1,053,232 output
+tokens when the limit fired — a 380× spread with no threshold in it. A local guess
+would warn constantly and stay quiet when it mattered, so there isn't one.
+
+The first run prompts macOS for access to the Claude Code credential, via
+Apple-signed `/usr/bin/security`. Choose "Always Allow" and it won't ask again.
+Every other command works with no credential at all.
 
 ## Development
 
