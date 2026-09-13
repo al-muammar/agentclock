@@ -13,6 +13,20 @@ export function duration(ms: number): string {
   return rh ? `${d}d ${rh}h` : `${d}d`;
 }
 
+/**
+ * "847", "231k", "1.2M", "19.8B" — token counts at a glance.
+ *
+ * Token figures span six orders of magnitude in practice (cache reads run ~500x
+ * output), so a thousands-separated integer is unreadable in a column.
+ */
+export function tokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`;
+  return `${(n / 1_000_000_000).toFixed(1)}B`;
+}
+
 /** Decimal hours, for tables where durations get compared rather than read. */
 export function hours(ms: number, digits = 1): string {
   return (ms / 3_600_000).toFixed(digits);

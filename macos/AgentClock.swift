@@ -33,6 +33,21 @@ func sessionsDir() -> URL { claudeRoot().appendingPathComponent("sessions") }
 
 func projectsDir() -> URL { claudeRoot().appendingPathComponent("projects") }
 
+/// Where agentclock keeps its own state. Mirrors agentclockDir() in src/paths.ts,
+/// AGENTCLOCK_DIR override included — the tests rely on it to point both
+/// implementations at one fixture.
+func agentclockDir() -> URL {
+  if let override = ProcessInfo.processInfo.environment["AGENTCLOCK_DIR"],
+    !override.trimmingCharacters(in: .whitespaces).isEmpty
+  {
+    return URL(fileURLWithPath: override.trimmingCharacters(in: .whitespaces)).standardized
+  }
+  return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".agentclock")
+}
+
+/// The quota snapshot the CLI writes. See src/usagecache.ts for the contract.
+func quotaCachePath() -> URL { agentclockDir().appendingPathComponent("usage.json") }
+
 // MARK: - Model
 
 /// Statuses that mean an agent is doing work rather than sitting still.
@@ -522,7 +537,91 @@ final class Smoother {
   }
 }
 
+// MARK: - Quota
+
+/// One limit scope, as written by the CLI.
+///
+/// Deliberately a reader and nothing more: the fetch, the credential and the
+/// response parsing all live in TypeScript. This app does not make network calls,
+/// and keeping it that way is what lets it stay a two-second timer over a file.
+struct QuotaScope {
+  var key: String
+  var label: String
+  var left: Int
+  var resetsAt: Double?  // epoch ms
+}
+
+struct QuotaSnapshot {
+  var scopes: [QuotaScope]
+  var fetchedAt: Double  // epoch ms
+  /// The scope closest to exhaustion — the one that decides when work stops.
+  var binding: QuotaScope? { scopes.min(by: { $0.left < $1.left }) }
+}
+
+/// Per-session token burn, measured from transcripts by the CLI.
+struct SessionBurn {
+  var sessionId: String
+  var output: Int
+  var cacheRead: Int
+  var subagentOutput: Int
+  var messages: Int
+}
+
+struct UsageFile {
+  var quota: QuotaSnapshot?
+  var burn: [String: SessionBurn]
+}
+
+/// Read the snapshot. Absent, unreadable or malformed all mean "no quota to show",
+/// never a crash and never a blank badge — the count is the thing that must survive.
+func readUsageFile() -> UsageFile {
+  guard let data = try? Data(contentsOf: quotaCachePath()),
+    let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+    (root["v"] as? Int) == 1
+  else { return UsageFile(quota: nil, burn: [:]) }
+
+  var scopes: [QuotaScope] = []
+  for raw in (root["scopes"] as? [[String: Any]]) ?? [] {
+    guard let key = raw["key"] as? String, let left = raw["left"] as? Int else { continue }
+    scopes.append(
+      QuotaScope(
+        key: key,
+        label: (raw["label"] as? String) ?? key,
+        left: left,
+        resetsAt: raw["resetsAt"] as? Double))
+  }
+
+  var burn: [String: SessionBurn] = [:]
+  for raw in (root["sessions"] as? [[String: Any]]) ?? [] {
+    guard let id = raw["sessionId"] as? String else { continue }
+    burn[id] = SessionBurn(
+      sessionId: id,
+      output: (raw["output"] as? Int) ?? 0,
+      cacheRead: (raw["cacheRead"] as? Int) ?? 0,
+      subagentOutput: (raw["subagentOutput"] as? Int) ?? 0,
+      messages: (raw["messages"] as? Int) ?? 0)
+  }
+
+  let quota =
+    scopes.isEmpty
+    ? nil
+    : QuotaSnapshot(scopes: scopes, fetchedAt: (root["fetchedAt"] as? Double) ?? 0)
+  return UsageFile(quota: quota, burn: burn)
+}
+
 // MARK: - Formatting
+
+/// "847", "231k", "1.2M" — mirrors tokens() in src/format.ts.
+func tokenCount(_ n: Int) -> String {
+  let v = Double(n)
+  if n <= 0 { return "0" }
+  if n < 1000 { return "\(n)" }
+  if n < 1_000_000 { return String(format: n < 10_000 ? "%.1fk" : "%.0fk", v / 1000) }
+  if n < 1_000_000_000 {
+    return String(format: n < 10_000_000 ? "%.1fM" : "%.0fM", v / 1_000_000)
+  }
+  return String(format: "%.1fB", v / 1_000_000_000)
+}
 
 func duration(_ ms: Double) -> String {
   let total = Int(max(0, ms) / 1000)
@@ -547,9 +646,17 @@ func fanOut(_ sessions: [LiveSession], _ agents: [String: [LiveSubagent]], _ cou
     .reduce(0) { $0 + (agents[$1.sessionId] ?? []).filter(\.running).count }
 }
 
-/// `◐ 5` with nothing fanned out, `◐ 5 (12)` with twelve agents inside those five.
-func badgeTitle(_ working: Int, _ agents: Int) -> String {
-  agents > 0 ? "◐ \(working) (\(agents))" : "◐ \(working)"
+/// `◐ 5` with nothing fanned out, `◐ 5 (12)` with twelve agents inside those five,
+/// and ` · 42%` appended when a quota snapshot is on disk.
+///
+/// Quota is appended rather than leading: the session count is what this badge has
+/// always meant, and a number that changes place depending on whether a cache file
+/// happens to exist is a badge you cannot read at a glance. When there is no
+/// snapshot the string is byte-for-byte what it was before quota existed.
+func badgeTitle(_ working: Int, _ agents: Int, _ quotaLeft: Int? = nil) -> String {
+  let base = agents > 0 ? "◐ \(working) (\(agents))" : "◐ \(working)"
+  guard let left = quotaLeft else { return base }
+  return "\(base) · \(left)%"
 }
 
 // MARK: - Headless modes
@@ -590,6 +697,19 @@ func emitJSON() {
 let DEFAULT_HOLD: Double = 30
 let REFRESH_SECONDS: Double = 2
 
+/// How often to ask the CLI for a fresh quota snapshot.
+///
+/// The 130x argument that keeps Node out of the two-second tick is an argument
+/// about cadence, not about spawning: quota moves on five-hour boundaries, so the
+/// badge reads a file every two seconds and the fetch happens once a minute.
+///
+/// Measured at ~0.78s of CPU per refresh — Node startup, the incremental
+/// transcript read for per-session burn, then the request — which is about 1.3% of
+/// one core at this cadence. On the two-second tick the same work would be 40% of
+/// a core, which is the whole reason it is not there. Anything faster than a
+/// minute would also be rude to the endpoint.
+let QUOTA_REFRESH_SECONDS: Double = 60
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   private var item: NSStatusItem!
   private var timer: DispatchSourceTimer?
@@ -598,6 +718,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   private var subagents: [String: [LiveSubagent]] = [:]
   private var workingIds: Set<String> = []
   private var lastTitle = ""
+  private var usage = UsageFile(quota: nil, burn: [:])
+  private var lastQuotaRefresh: Double = 0
+  private var refreshingQuota = false
 
   func applicationDidFinishLaunching(_ note: Notification) {
     if UserDefaults.standard.object(forKey: "hold") != nil {
@@ -623,18 +746,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     timer = t
   }
 
+  /**
+   * Ask the CLI to refresh the quota snapshot, at most once a minute.
+   *
+   * Fire and forget, off the timer queue: the badge must never wait on a network
+   * call. A missing CLI, a failed spawn or a fetch that cannot happen all leave
+   * the previous snapshot in place, which is why the file is the source of truth
+   * here rather than the process's exit code.
+   */
+  private func refreshQuotaIfDue(_ now: Double) {
+    guard !refreshingQuota, now - lastQuotaRefresh >= QUOTA_REFRESH_SECONDS * 1000 else { return }
+    refreshingQuota = true
+    lastQuotaRefresh = now
+
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      defer { self?.refreshingQuota = false }
+      guard let bin = AgentClockCLI.resolve() else { return }
+      let p = Process()
+      p.executableURL = URL(fileURLWithPath: bin)
+      p.arguments = ["usage", "--json"]
+      p.standardOutput = FileHandle.nullDevice
+      p.standardError = FileHandle.nullDevice
+      guard (try? p.run()) != nil else { return }
+      p.waitUntilExit()
+    }
+  }
+
   private func refresh() {
     let found = readLiveSessions()
     let agents = readLiveSubagents(for: found)
     let working = smoother.working(found, agents)
     let counted = Set(working.map(\.sessionId))
-    let title = badgeTitle(working.count, fanOut(found, agents, counted))
+    let snapshot = readUsageFile()
+    let title = badgeTitle(
+      working.count, fanOut(found, agents, counted), snapshot.quota?.binding?.left)
+
+    refreshQuotaIfDue(Date().timeIntervalSince1970 * 1000)
 
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       self.sessions = found
       self.subagents = agents
       self.workingIds = counted
+      self.usage = snapshot
       // The load-bearing line. Assigning an unchanged title still forces the status
       // item to redraw; guarding it measured a ~2.8x cut in idle CPU.
       guard title != self.lastTitle else { return }
@@ -649,6 +803,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
   func menuNeedsUpdate(_ menu: NSMenu) {
     menu.removeAllItems()
     let now = Date().timeIntervalSince1970 * 1000
+
+    // Quota leads: it is the number you open this menu to check, and it is the one
+    // thing here that does not come off the local disk.
+    if let quota = usage.quota {
+      if let binding = quota.binding {
+        let head = NSMenuItem(
+          title: "\(binding.left)% left of your \(binding.label)", action: nil, keyEquivalent: "")
+        head.isEnabled = false
+        menu.addItem(head)
+      }
+      for scope in quota.scopes {
+        let reset = scope.resetsAt.map { $0 > now ? "   resets in \(duration($0 - now))" : "" } ?? ""
+        menu.addItem(disabled("      \(scope.label)   \(scope.left)% left\(reset)"))
+      }
+      // An old number must never pass for a current one.
+      if quota.fetchedAt > 0, now - quota.fetchedAt > QUOTA_REFRESH_SECONDS * 4000 {
+        menu.addItem(disabled("      measured \(duration(now - quota.fetchedAt)) ago"))
+      }
+      menu.addItem(.separator())
+    }
 
     let running = { (s: LiveSession) in (self.subagents[s.sessionId] ?? []).filter(\.running) }
     let working = sessions.filter { workingIds.contains($0.sessionId) }
@@ -670,8 +844,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       for s in working {
         let mine = running(s)
         let cooling = smoother.isCoolingDown(s, subagents[s.sessionId] ?? [])
+        // Per-session burn, when the CLI has measured it. Exact token counts read
+        // from this session's own transcript — never an estimate.
+        let spend = usage.burn[s.sessionId].map { $0.output > 0 ? "   \(tokenCount($0.output))" : "" } ?? ""
         let row = NSMenuItem(
-          title: "\(cooling ? "◐" : "●")  \(s.label)   \(s.projectLabel)   \(duration(now - s.startedAt))",
+          title:
+            "\(cooling ? "◐" : "●")  \(s.label)   \(s.projectLabel)   \(duration(now - s.startedAt))\(spend)",
           action: #selector(revealSession(_:)), keyEquivalent: "")
         row.target = self
         row.representedObject = s.cwd
@@ -894,7 +1072,34 @@ if args.contains("--badge") {
   let sessions = readLiveSessions()
   let agents = readLiveSubagents(for: sessions)
   let working = s.working(sessions, agents)
-  print(badgeTitle(working.count, fanOut(sessions, agents, Set(working.map(\.sessionId)))))
+  print(
+    badgeTitle(
+      working.count,
+      fanOut(sessions, agents, Set(working.map(\.sessionId))),
+      readUsageFile().quota?.binding?.left))
+  exit(0)
+}
+/// The quota snapshot as this app reads it. Exists so test/menubar.test.js can
+/// hold the Swift reader equal to the TypeScript one on the same cache file.
+if args.contains("--usage") {
+  let file = readUsageFile()
+  var payload: [String: Any] = [:]
+  if let q = file.quota {
+    payload["fetchedAt"] = q.fetchedAt
+    payload["scopes"] = q.scopes.map { s -> [String: Any] in
+      var o: [String: Any] = ["key": s.key, "label": s.label, "left": s.left]
+      if let r = s.resetsAt { o["resetsAt"] = r }
+      return o
+    }
+    if let b = q.binding { payload["binding"] = b.key }
+  }
+  payload["sessions"] = file.burn.values
+    .sorted { $0.sessionId < $1.sessionId }
+    .map { ["sessionId": $0.sessionId, "output": $0.output, "cacheRead": $0.cacheRead] }
+  let data = try! JSONSerialization.data(
+    withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+  FileHandle.standardOutput.write(data)
+  FileHandle.standardOutput.write("\n".data(using: .utf8)!)
   exit(0)
 }
 

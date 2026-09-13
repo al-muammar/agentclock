@@ -16,11 +16,14 @@ import {
   CLEAR_SCREEN,
   HIDE_CURSOR,
   SHOW_CURSOR,
+  quotaLine,
   renderNow,
   renderStats,
   renderTimeline,
+  renderUsage,
 } from './render/term.js';
 import { scanTranscripts } from './transcripts.js';
+import { readCached, refreshUsage } from './usagecache.js';
 
 export const VERSION = '0.4.0';
 
@@ -30,6 +33,7 @@ const HELP = `
   Usage
     agentclock                 Build the dashboard and open it
     agentclock now             What is running right now
+    agentclock usage           How much of your quota is left
     agentclock timeline        Per-day activity timeline
     agentclock watch           Live view, refreshing in place
     agentclock stats           Historical summary in the terminal
@@ -47,11 +51,17 @@ const HELP = `
     --hours <range>         Zoom the timeline: 9-18, 09:30-13:00
     --interval <seconds>    Refresh rate for watch  (default 2)
     --no-archive            Do not read or update ~/.agentclock/archive.jsonl
+    --cached                Report the last usage snapshot without fetching
     --json                  Machine-readable output
     --verbose               Report parse throughput
     --version
 
   Notes
+    "agentclock usage" is the one command that touches the network: it asks
+    Anthropic's own /api/oauth/usage for your quota, using the credential Claude
+    Code already stores, because remaining quota exists nowhere on disk. Nothing
+    else in this tool makes a network call, and nothing about your code or your
+    projects is ever sent anywhere.
     History counts a session with N subagents as one; "now" and the menu bar also
     show the agents running inside each session, and count a session as working
     when its only worker is a background agent.
@@ -75,6 +85,8 @@ interface Options {
   archive: boolean;
   interval: number;
   hours: HourRange | null;
+  /** Report the stored usage snapshot instead of fetching a new one. */
+  cached: boolean;
 }
 
 export function parseArgs(argv: string[]): { options: Options; error?: string } {
@@ -91,6 +103,7 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
     archive: true,
     interval: 2,
     hours: null,
+    cached: false,
   };
 
   const rest: string[] = [];
@@ -125,6 +138,9 @@ export function parseArgs(argv: string[]): { options: Options; error?: string } 
       }
       case '--no-archive':
         options.archive = false;
+        break;
+      case '--cached':
+        options.cached = true;
         break;
       case '--interval': {
         const value = Number(argv[++i]);
@@ -190,7 +206,52 @@ async function commandNow(options: Options): Promise<number> {
   }
 
   process.stdout.write(renderNow(sessions, anon, subagents));
+
+  // Read-only: `now` never triggers a fetch. The quota shows up here when
+  // something else has already refreshed it, and stays quiet otherwise.
+  const usage = await readCached();
+  const line = quotaLine(usage);
+  if (line) process.stdout.write(`${line}\n\n`);
   return 0;
+}
+
+/**
+ * How much quota is left.
+ *
+ * The one command that makes a network call. It asks Anthropic's own
+ * /api/oauth/usage, with the credential Claude Code already stores, because
+ * remaining quota is the single number this tool cannot read off the disk: it is
+ * a server-side accounting of tokens under a weighting that is not published, and
+ * measuring it locally was tried and does not work — across the author's 40
+ * recorded limit hits the five-hour window held between 2,745 and 1,053,232
+ * output tokens, a 380x spread with no threshold in it.
+ */
+async function commandUsage(options: Options): Promise<number> {
+  const sessions = await readLiveSessions();
+  const usage = options.cached ? await readCached() : await refreshUsage({ sessions });
+  const anon = new Anonymizer(options.anonymize);
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          quota: usage.quota,
+          sessions: usage.sessions.map((s) => ({
+            ...s,
+            sessionId: anon.session(s.sessionId, s.sessionId),
+          })),
+          ...(usage.failure ? { failure: usage.failure } : {}),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    // A missing quota is not a crash: the burn figures are still real.
+    return usage.quota ? 0 : 1;
+  }
+
+  process.stdout.write(renderUsage(usage, anon, sessions));
+  return usage.quota ? 0 : 1;
 }
 
 /** Scan transcripts with a progress line, then reduce to stats for the window. */
@@ -496,6 +557,8 @@ export async function run(argv: string[]): Promise<number> {
   switch (options.command) {
     case 'now':
       return commandNow(options);
+    case 'usage':
+      return commandUsage(options);
     case 'stats':
       return commandStats(options);
     case 'report':

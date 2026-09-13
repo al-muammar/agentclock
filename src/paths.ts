@@ -35,6 +35,28 @@ export function archivePath(): string {
   return path.join(agentclockDir(), 'archive.jsonl');
 }
 
+/**
+ * Last known quota snapshot, plus the per-session burn that goes with it.
+ *
+ * Written by the CLI, read by the menu bar app. Percentages, reset times and token
+ * counts only — never a credential. Kept small on purpose: the menu bar parses it
+ * every two seconds, so the reading cursors live in their own file rather than
+ * bloating this one.
+ */
+export function quotaCachePath(): string {
+  return path.join(agentclockDir(), 'usage.json');
+}
+
+/**
+ * Per-file reading positions for the token burn.
+ *
+ * Internal bookkeeping, and an order of magnitude larger than the snapshot it
+ * supports, which is exactly why nothing on the display path reads it.
+ */
+export function burnStatePath(): string {
+  return path.join(agentclockDir(), 'burn-state.json');
+}
+
 /** Default output location for the dashboard. */
 export function defaultReportPath(): string {
   return path.join(agentclockDir(), 'dashboard.html');

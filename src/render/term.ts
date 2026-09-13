@@ -5,9 +5,12 @@ import {
   duration,
   pad,
   padStart,
+  tokens,
   truncate,
   type HourRange,
 } from '../format.js';
+import type { UsageSnapshot } from '../usagecache.js';
+import { explain, type QuotaScope } from '../quota.js';
 import { ACTIVE_STATUSES, isWorking, type LiveSession, type LiveSubagent } from '../types.js';
 import type { Stats } from '../stats.js';
 
@@ -27,6 +30,7 @@ export const c = {
   busy: code('36'), // cyan — reads as the teal used throughout the dashboard
   waiting: code('33'), // amber
   idle: code('90'), // grey
+  low: code('31'), // red — only for a quota about to run out
   bold: code('1'),
   dim: code('2'),
   ink: code('39'),
@@ -37,6 +41,139 @@ function statusStyle(status: string): (s: string) => string {
   if (status === 'waiting') return c.waiting;
   if (status === 'idle') return c.idle;
   return c.waiting; // unknown status: make it visible rather than silently grey
+}
+
+/**
+ * Colour by how much is left, not by how much is used.
+ *
+ * The thresholds are deliberately blunt: under a quarter left is worth noticing,
+ * under a tenth is worth interrupting for. Nothing here predicts when you will run
+ * out — that depends on a weighting the server does not publish.
+ */
+function quotaStyle(left: number): (s: string) => string {
+  if (left <= 10) return c.low;
+  if (left <= 25) return c.waiting;
+  return c.busy;
+}
+
+/** `████████░░` — ten cells, filled by what remains. */
+function meter(left: number, width = 10): string {
+  const filled = Math.max(0, Math.min(width, Math.round((left / 100) * width)));
+  return '█'.repeat(filled) + '░'.repeat(width - filled);
+}
+
+function resetLabel(scope: QuotaScope, now: number): string {
+  if (scope.resetsAt === undefined) return '';
+  const delta = scope.resetsAt - now;
+  return delta > 0 ? `resets in ${duration(delta)}` : 'resetting now';
+}
+
+/**
+ * How much quota is left, and what the live sessions are spending.
+ *
+ * The overall figure leads because that is the question — "how much have I got
+ * left" — and the per-session breakdown sits underneath it. The two are different
+ * kinds of number and the layout should not pretend otherwise: the top block is
+ * the server's own accounting, the bottom is exact token counts read from
+ * transcripts on this machine.
+ */
+export function renderUsage(
+  usage: UsageSnapshot,
+  anon: Anonymizer,
+  sessions: LiveSession[] = [],
+  now = Date.now(),
+): string {
+  const lines: string[] = [''];
+
+  if (!usage.quota) {
+    lines.push(`  ${c.waiting('No usage figures.')}`);
+    if (usage.failure) lines.push(`  ${c.dim(explain(usage.failure))}`);
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  const { binding, scopes, fetchedAt, stale } = usage.quota;
+
+  if (binding) {
+    const style = quotaStyle(binding.left);
+    const reset = resetLabel(binding, now);
+    lines.push(
+      `  ${style(c.bold(`${binding.left}% left`))} ${c.dim(`of your ${binding.label}`)}` +
+        (reset ? `   ${c.dim(reset)}` : ''),
+    );
+    lines.push('');
+  }
+
+  const labelWidth = Math.max(...scopes.map((s) => s.label.length));
+  for (const scope of scopes) {
+    const style = quotaStyle(scope.left);
+    const reset = resetLabel(scope, now);
+    lines.push(
+      `  ${c.dim(pad(scope.label, labelWidth))}  ${style(meter(scope.left))}  ` +
+        `${style(padStart(`${scope.left}%`, 4))} ${c.dim('left')}   ${c.dim(reset)}`,
+    );
+  }
+
+  // Never let an old number pass for a current one.
+  if (stale && fetchedAt > 0) {
+    lines.push('');
+    lines.push(`  ${c.dim(`Cached ${duration(now - fetchedAt)} ago.`)}`);
+    if (usage.failure) lines.push(`  ${c.dim(explain(usage.failure))}`);
+  } else if (usage.failure) {
+    lines.push('');
+    lines.push(`  ${c.dim(explain(usage.failure))}`);
+  }
+
+  const spending = usage.sessions.filter((s) => s.messages > 0);
+  if (spending.length > 0) {
+    const byId = new Map(sessions.map((s) => [s.sessionId, s]));
+    const rows = [...spending].sort((a, b) => b.output - a.output);
+
+    lines.push('');
+    lines.push(c.dim('  TOKENS IN LIVE SESSIONS'));
+
+    const nameOf = (id: string) => {
+      const session = byId.get(id);
+      return anon.session(session?.name ?? id.slice(0, 8), id);
+    };
+    const nameWidth = Math.min(28, Math.max(12, ...rows.map((r) => nameOf(r.sessionId).length)));
+
+    lines.push(
+      c.dim(
+        `  ${pad('SESSION', nameWidth)}  ${padStart('OUTPUT', 8)}  ${padStart('CACHE RD', 9)}  ${padStart('AGENTS', 8)}`,
+      ),
+    );
+    for (const row of rows) {
+      const agentShare = row.subagentOutput > 0 ? tokens(row.subagentOutput) : '·';
+      lines.push(
+        `  ${pad(truncate(nameOf(row.sessionId), nameWidth), nameWidth)}  ` +
+          `${padStart(tokens(row.output), 8)}  ${c.dim(padStart(tokens(row.cacheRead), 9))}  ` +
+          `${c.dim(padStart(agentShare, 8))}`,
+      );
+    }
+
+    const total = rows.reduce((sum, r) => sum + r.output, 0);
+    lines.push(
+      c.dim(`  ${pad('', nameWidth)}  ${padStart(tokens(total), 8)}  ${' '.repeat(9)}  total`),
+    );
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
+/** One line of quota, for the head of `now`. Empty when there is nothing to say. */
+export function quotaLine(usage: UsageSnapshot, now = Date.now()): string {
+  const binding = usage.quota?.binding;
+  if (!binding) return '';
+  const style = quotaStyle(binding.left);
+  const reset = resetLabel(binding, now);
+  const age = usage.quota?.stale ? c.dim(' · cached') : '';
+  return (
+    `  ${style(`${binding.left}% left`)} ${c.dim(`of your ${binding.label}`)}` +
+    (reset ? c.dim(` · ${reset}`) : '') +
+    age
+  );
 }
 
 /** The live three-way split, plus one line per running session. */
