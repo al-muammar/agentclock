@@ -6,6 +6,26 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-09-14
+
+### Fixed
+
+- **The edge readout can be moved to another screen.** On a two-screen Mac it was
+  stuck on whichever display it launched on: dragging it sideways did nothing at
+  all. Drag it across a screen boundary now and it settles on that display's right
+  edge. It still never floats away from an edge — sideways movement picks which
+  edge, nothing more.
+- It remembers the screen you put it on, by name as well as by display id, so a
+  reboot or a dock cycle does not lose the choice. Unplug that monitor and the
+  readout falls back to your main screen without forgetting — plug it back in and
+  the readout goes home.
+
+### Added
+
+- A **Screen** item in the menu, listing your displays, for moving the readout
+  without the drag. It appears only when there is more than one screen to choose
+  from.
+
 ## [0.6.0] — 2026-09-14
 
 ### Added
@@ -210,7 +230,8 @@ own `turn_duration.durationMs` — it is exact or absent, never estimated. Only
 `agentclock usage` touches the network, and only to read your own quota; nothing
 about your code, your projects or your sessions is sent anywhere.
 
-[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/al-muammar/agentclock/releases/tag/v0.6.1
 [0.6.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.6.0
 [0.5.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.5.0
 [0.4.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.4.0
