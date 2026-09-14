@@ -6,31 +6,50 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-14
+
 ### Added
 
 - The macOS app now lives on the **right edge of your screen** rather than in the
-  menu bar: a narrow black tab flush against the edge — rounded on its left side,
-  square where it meets the edge — with a teal dot per working session stacked one
-  above the next, a number for the idle ones, and a ring for
-  the limit closest to running out. Point at it and it opens into the full readout
-  — every quota scope with its reset countdown, each working session with its
-  project, uptime, spend and agents, and anything waiting on you pulled to the top.
-  Click to pin it open, click a row to reveal that session in Finder, right-click
-  for the settings.
-- The strip fades back when nothing is working, is draggable along the edge and
-  remembers where you put it, stays visible over full-screen apps, and never takes
-  focus. It needs no macOS permissions at all.
-- Quota appears at the foot of both the strip and the card, with the percentage
-  and the reset countdown for your session and weekly limits. The strip follows the
+  menu bar: a narrow black tab flush against the edge, rounded on its left side and
+  flared into the edge on its right, carrying a teal dot per working session stacked
+  one above the next, a number for the idle ones, and a ring for how much of your
+  session limit is left. Point at it and it opens into the full readout — each
+  working session with its project, uptime, spend and the agents it has out,
+  anything waiting on you pulled to the top, and your limits with their reset
+  countdowns at the foot. Click to pin it open, click a row to reveal that session
+  in Finder, right-click for the settings.
+- The tab fades back when nothing is working, is draggable along the edge and
+  remembers where you put it, stays visible over another app's full-screen space,
+  and never takes focus — you can point at it mid-sentence and keep typing. Being on
+  the edge also makes it a target you cannot overshoot.
+- It needs **no macOS permissions at all** — no Accessibility, no Screen Recording.
+  That is deliberate rather than lucky: the app is ad-hoc signed and recompiled on
+  your machine, so every upgrade looks like new code to macOS and any permission you
+  granted would have to be granted again.
+- Quota appears at the foot of both the tab and the card, with the percentage and
+  the reset countdown for your session and weekly limits. The tab follows the
   **session limit** — the five-hour window — because across a working day the weekly
-  number barely moves. The menu bar badge still follows whichever limit is closest
-  to running out.
+  number barely moves, and a number that never changes tells you nothing about
+  whether you can keep going this afternoon. The menu bar badge still follows
+  whichever limit is closest to running out: it is one line of text with no room to
+  say which limit it means, so it shows the one that decides when work stops.
 
 ### Changed
 
 - *Show* in the menu picks where the numbers appear: on the screen edge (the new
-  default), in the menu bar as before, or both at once. The menu bar badge itself
-  is unchanged.
+  default), in the menu bar exactly as before, or both at once. The menu bar badge
+  itself is unchanged, so nothing about the old behaviour is lost — but note the
+  default has moved, and after upgrading the badge will be gone until you ask for
+  it back.
+
+### Notes
+
+Quit lives in the tab's right-click menu. With the status item switched off and no
+Dock tile, that menu is the only way out of the app.
+
+The app's cost is unchanged: about 20 MB and a tenth of a percent of one core. The
+tab is drawn, not composited from a live blur, so it adds nothing measurable.
 
 ## [0.5.0] — 2026-09-14
 
@@ -191,7 +210,8 @@ own `turn_duration.durationMs` — it is exact or absent, never estimated. Only
 `agentclock usage` touches the network, and only to read your own quota; nothing
 about your code, your projects or your sessions is sent anywhere.
 
-[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.6.0
 [0.5.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.5.0
 [0.4.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.4.0
 [0.3.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.3.0
