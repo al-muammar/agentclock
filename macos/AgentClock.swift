@@ -609,6 +609,73 @@ func readUsageFile() -> UsageFile {
   return UsageFile(quota: quota, burn: burn)
 }
 
+// MARK: - Snapshot
+
+/// One refresh's worth of state, computed off the main thread and handed to
+/// whatever is rendering it — the badge, the HUD, or both.
+///
+/// It exists so exactly one place decides what working, waiting and idle mean. Two
+/// renderers each partitioning the session list would drift, and the first symptom
+/// would be a badge that disagrees with the list behind it.
+struct Snapshot {
+  var sessions: [LiveSession] = []
+  var subagents: [String: [LiveSubagent]] = [:]
+  var workingIds: Set<String> = []
+  /// Counted only because of the smoother's hold, not because they are working
+  /// this instant. Rendered dimmed, so the smoothing is visible rather than a
+  /// quiet fiction. Computed during the scan because the Smoother is owned by the
+  /// timer queue and must not be asked questions from the main thread.
+  var coolingIds: Set<String> = []
+  var usage = UsageFile(quota: nil, burn: [:])
+
+  /// Counted as working, oldest first.
+  var working: [LiveSession] {
+    sessions.filter { workingIds.contains($0.sessionId) }.sorted { $0.startedAt < $1.startedAt }
+  }
+
+  var waiting: [LiveSession] {
+    sessions.filter { $0.status == "waiting" && !workingIds.contains($0.sessionId) }
+  }
+
+  var idle: [LiveSession] {
+    sessions.filter { !workingIds.contains($0.sessionId) && $0.status != "waiting" }
+  }
+
+  /// Agents running inside the sessions being counted.
+  ///
+  /// Restricted to counted sessions on purpose: a number in parentheses that
+  /// included work belonging to a session the badge says is not working would be
+  /// unaccountable — the list behind the badge could not explain it.
+  var fanOut: Int {
+    sessions.filter { workingIds.contains($0.sessionId) }
+      .reduce(0) { $0 + (subagents[$1.sessionId] ?? []).filter(\.running).count }
+  }
+
+  /// The scope closest to exhaustion. What the menu bar badge appends, because a
+  /// badge is one line with no room to say which limit it means, and the limit that
+  /// binds is the one that decides when work stops.
+  var quotaLeft: Int? { usage.quota?.binding?.left }
+
+  /// The five-hour window — what the HUD's tab shows.
+  ///
+  /// Deliberately not the binding scope: over a working day the weekly limit barely
+  /// moves, so following the minimum pins the tab to a number that tells you nothing
+  /// about whether you can keep going this afternoon. The card behind it lists both,
+  /// and always includes the binding scope, so the one that actually bites is never
+  /// more than a hover away.
+  ///
+  /// Falls back to the binding scope if the endpoint stops reporting `five_hour`, so
+  /// a rename costs the preference rather than the number.
+  var sessionQuota: QuotaScope? {
+    guard let quota = usage.quota else { return nil }
+    return quota.scopes.first { $0.key == "five_hour" } ?? quota.binding
+  }
+
+  /// Whether there is anything here worth lighting up for. The HUD rests at low
+  /// opacity otherwise, which is what earns it a permanent place on the screen.
+  var hasAttention: Bool { !workingIds.isEmpty || !waiting.isEmpty }
+}
+
 // MARK: - Formatting
 
 /// "847", "231k", "1.2M" — mirrors tokens() in src/format.ts.
@@ -634,18 +701,6 @@ func duration(_ ms: Double) -> String {
 
 // MARK: - The badge
 
-/// Agents running inside the sessions the badge is counting.
-///
-/// Restricted to `counted` on purpose: a number in parentheses that includes work
-/// belonging to a session the badge says is not working would be unaccountable —
-/// the list behind the badge could not explain it.
-func fanOut(_ sessions: [LiveSession], _ agents: [String: [LiveSubagent]], _ counted: Set<String>)
-  -> Int
-{
-  sessions.filter { counted.contains($0.sessionId) }
-    .reduce(0) { $0 + (agents[$1.sessionId] ?? []).filter(\.running).count }
-}
-
 /// `◐ 5` with nothing fanned out, `◐ 5 (12)` with twelve agents inside those five,
 /// and ` · 42%` appended when a quota snapshot is on disk.
 ///
@@ -660,6 +715,21 @@ func badgeTitle(_ working: Int, _ agents: Int, _ quotaLeft: Int? = nil) -> Strin
 }
 
 // MARK: - Headless modes
+
+/// A snapshot with smoothing off, for the headless flags.
+///
+/// Hold is zero on purpose: these flags exist for test/menubar.test.js to compare
+/// this implementation against the TypeScript, which has no smoother at all, so
+/// they must report the raw instant rather than the badge's held view of it.
+func headlessSnapshot() -> Snapshot {
+  let sessions = readLiveSessions()
+  let agents = readLiveSubagents(for: sessions)
+  let working = Smoother(hold: 0).working(sessions, agents)
+  return Snapshot(
+    sessions: sessions, subagents: agents,
+    workingIds: Set(working.map(\.sessionId)), coolingIds: [],
+    usage: readUsageFile())
+}
 
 /// Emit the live sessions as JSON. Exists so test/menubar.test.js can compare this
 /// implementation against readLiveSessions() from dist/, and so the scan can be
@@ -710,15 +780,29 @@ let REFRESH_SECONDS: Double = 2
 /// minute would also be rude to the endpoint.
 let QUOTA_REFRESH_SECONDS: Double = 60
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-  private var item: NSStatusItem!
+/// Where the numbers appear. The HUD is the default because a menu bar item can
+/// only ever be one line of text, and on a notched Mac the system will silently
+/// drop it when the bar runs out of room while `isVisible` keeps saying true.
+enum DisplayMode: String {
+  case hud
+  case menubar
+  case both
+
+  static var current: DisplayMode {
+    UserDefaults.standard.string(forKey: "display").flatMap(DisplayMode.init(rawValue:)) ?? .hud
+  }
+
+  var showsHUD: Bool { self != .menubar }
+  var showsMenuBar: Bool { self != .hud }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HUDDelegate {
+  private var item: NSStatusItem?
+  private var hud: HUDController?
   private var timer: DispatchSourceTimer?
   private let smoother = Smoother(hold: DEFAULT_HOLD)
-  private var sessions: [LiveSession] = []
-  private var subagents: [String: [LiveSubagent]] = [:]
-  private var workingIds: Set<String> = []
+  private var snapshot = Snapshot()
   private var lastTitle = ""
-  private var usage = UsageFile(quota: nil, burn: [:])
   private var lastQuotaRefresh: Double = 0
   private var refreshingQuota = false
 
@@ -727,14 +811,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       smoother.hold = UserDefaults.standard.double(forKey: "hold")
     }
 
-    item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    // Monospaced digits, or the badge visibly jerks as the count crosses 9 -> 10.
-    item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-    item.button?.title = "◌"
-
-    let menu = NSMenu()
-    menu.delegate = self
-    item.menu = menu
+    applyDisplayMode()
 
     let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
     // Leeway matters: DispatchSourceTimer defaults to zero, which is the worst
@@ -744,6 +821,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     t.setEventHandler { [weak self] in self?.refresh() }
     t.resume()
     timer = t
+  }
+
+  /// Build or tear down each renderer to match the preference.
+  ///
+  /// Both can be on at once, and at least one always is: `applyDisplayMode` is the
+  /// only place that decides, so there is no path that leaves the app running with
+  /// nothing on screen and no way to quit it.
+  private func applyDisplayMode() {
+    let mode = DisplayMode.current
+
+    if mode.showsMenuBar, item == nil {
+      let created = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+      // Monospaced digits, or the badge visibly jerks as the count crosses 9 -> 10.
+      created.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+      created.button?.title = lastTitle.isEmpty ? "◌" : lastTitle
+      let menu = NSMenu()
+      menu.delegate = self
+      created.menu = menu
+      item = created
+    } else if !mode.showsMenuBar, let existing = item {
+      NSStatusBar.system.removeStatusItem(existing)
+      item = nil
+      lastTitle = ""
+    }
+
+    if mode.showsHUD, hud == nil {
+      let controller = HUDController()
+      controller.delegate = self
+      controller.update(snapshot)
+      hud = controller
+    } else if !mode.showsHUD, let existing = hud {
+      existing.teardown()
+      hud = nil
+    }
   }
 
   /**
@@ -777,23 +888,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let agents = readLiveSubagents(for: found)
     let working = smoother.working(found, agents)
     let counted = Set(working.map(\.sessionId))
-    let snapshot = readUsageFile()
-    let title = badgeTitle(
-      working.count, fanOut(found, agents, counted), snapshot.quota?.binding?.left)
+    let next = Snapshot(
+      sessions: found,
+      subagents: agents,
+      workingIds: counted,
+      coolingIds: Set(
+        found.filter { smoother.isCoolingDown($0, agents[$0.sessionId] ?? []) }.map(\.sessionId)),
+      usage: readUsageFile())
+    let title = badgeTitle(working.count, next.fanOut, next.quotaLeft)
 
     refreshQuotaIfDue(Date().timeIntervalSince1970 * 1000)
 
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-      self.sessions = found
-      self.subagents = agents
-      self.workingIds = counted
-      self.usage = snapshot
+      self.snapshot = next
+      // The HUD does its own guarding: it redraws cheaply and only resizes when the
+      // pill's width actually changes.
+      self.hud?.update(next)
       // The load-bearing line. Assigning an unchanged title still forces the status
       // item to redraw; guarding it measured a ~2.8x cut in idle CPU.
       guard title != self.lastTitle else { return }
       self.lastTitle = title
-      self.item.button?.title = title
+      self.item?.button?.title = title
     }
   }
 
@@ -806,7 +922,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // Quota leads: it is the number you open this menu to check, and it is the one
     // thing here that does not come off the local disk.
-    if let quota = usage.quota {
+    if let quota = snapshot.usage.quota {
       if let binding = quota.binding {
         let head = NSMenuItem(
           title: "\(binding.left)% left of your \(binding.label)", action: nil, keyEquivalent: "")
@@ -824,18 +940,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       menu.addItem(.separator())
     }
 
-    let running = { (s: LiveSession) in (self.subagents[s.sessionId] ?? []).filter(\.running) }
-    let working = sessions.filter { workingIds.contains($0.sessionId) }
-      .sorted { $0.startedAt < $1.startedAt }
-    let waiting = sessions.filter { $0.status == "waiting" && !workingIds.contains($0.sessionId) }
-    let others = sessions.filter {
-      !workingIds.contains($0.sessionId) && $0.status != "waiting"
+    let running = { (s: LiveSession) in
+      (self.snapshot.subagents[s.sessionId] ?? []).filter(\.running)
     }
+    let working = snapshot.working
+    let waiting = snapshot.waiting
+    let others = snapshot.idle
 
-    if sessions.isEmpty {
+    if snapshot.sessions.isEmpty {
       menu.addItem(disabled("No Claude Code sessions are running"))
     } else {
-      let fanOut = working.reduce(0) { $0 + running($1).count }
+      let fanOut = snapshot.fanOut
       let header =
         fanOut > 0
         ? "\(working.count) working · \(fanOut) \(fanOut == 1 ? "agent" : "agents")"
@@ -843,10 +958,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       menu.addItem(disabled(header))
       for s in working {
         let mine = running(s)
-        let cooling = smoother.isCoolingDown(s, subagents[s.sessionId] ?? [])
+        let cooling = snapshot.coolingIds.contains(s.sessionId)
         // Per-session burn, when the CLI has measured it. Exact token counts read
         // from this session's own transcript — never an estimate.
-        let spend = usage.burn[s.sessionId].map { $0.output > 0 ? "   \(tokenCount($0.output))" : "" } ?? ""
+        let spend =
+          snapshot.usage.burn[s.sessionId]
+          .map { $0.output > 0 ? "   \(tokenCount($0.output))" : "" } ?? ""
         let row = NSMenuItem(
           title:
             "\(cooling ? "◐" : "●")  \(s.label)   \(s.projectLabel)   \(duration(now - s.startedAt))\(spend)",
@@ -901,6 +1018,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     menu.addItem(dash)
 
     menu.addItem(smoothingMenu())
+    menu.addItem(displayMenu())
 
     let login = NSMenuItem(
       title: "Launch at login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
@@ -936,6 +1054,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     parent.submenu = sub
     return parent
+  }
+
+  private func displayMenu() -> NSMenuItem {
+    let parent = NSMenuItem(title: "Show", action: nil, keyEquivalent: "")
+    let sub = NSMenu()
+    let choices: [(String, DisplayMode)] = [
+      ("On the edge of the screen", .hud),
+      ("In the menu bar", .menubar),
+      ("Both", .both),
+    ]
+    for (label, mode) in choices {
+      let i = NSMenuItem(title: label, action: #selector(setDisplayMode(_:)), keyEquivalent: "")
+      i.target = self
+      i.representedObject = mode.rawValue
+      i.state = DisplayMode.current == mode ? .on : .off
+      sub.addItem(i)
+    }
+    parent.submenu = sub
+    return parent
+  }
+
+  /// The HUD's own menu. Shorter than the menu bar dropdown because the HUD already
+  /// shows the list the dropdown exists to show — what is left is the controls.
+  ///
+  /// Quit lives here, and that is not a detail: with the status item switched off
+  /// and no Dock tile, this menu is the only way out of the app.
+  func hudContextMenu() -> NSMenu {
+    let menu = NSMenu()
+    let dash = NSMenuItem(
+      title: "Open dashboard…", action: #selector(openDashboard), keyEquivalent: "")
+    dash.target = self
+    menu.addItem(dash)
+    menu.addItem(.separator())
+    menu.addItem(smoothingMenu())
+    menu.addItem(displayMenu())
+    let login = NSMenuItem(
+      title: "Launch at login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+    login.target = self
+    login.state = LaunchAtLogin.enabled ? .on : .off
+    menu.addItem(login)
+    menu.addItem(.separator())
+    menu.addItem(
+      NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    return menu
+  }
+
+  func hudOpenDashboard() { openDashboard() }
+
+  func hudReveal(_ cwd: String) {
+    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: cwd)
+  }
+
+  @objc private func setDisplayMode(_ sender: NSMenuItem) {
+    guard let raw = sender.representedObject as? String else { return }
+    UserDefaults.standard.set(raw, forKey: "display")
+    applyDisplayMode()
+    refresh()
   }
 
   @objc private func setHold(_ sender: NSMenuItem) {
@@ -1054,59 +1229,68 @@ enum LaunchAtLogin {
 
 // MARK: - Entry point
 
-let args = CommandLine.arguments.dropFirst()
-if args.contains("--json") {
-  emitJSON()
-  exit(0)
-}
-if args.contains("--count") {
-  let s = Smoother(hold: 0)
-  let sessions = readLiveSessions()
-  print(s.working(sessions, readLiveSubagents(for: sessions)).count)
-  exit(0)
-}
-// The exact string the menu bar would show. Exists so test/menubar.test.js can
-// assert on the badge itself rather than trusting it.
-if args.contains("--badge") {
-  let s = Smoother(hold: 0)
-  let sessions = readLiveSessions()
-  let agents = readLiveSubagents(for: sessions)
-  let working = s.working(sessions, agents)
-  print(
-    badgeTitle(
-      working.count,
-      fanOut(sessions, agents, Set(working.map(\.sessionId))),
-      readUsageFile().quota?.binding?.left))
-  exit(0)
-}
-/// The quota snapshot as this app reads it. Exists so test/menubar.test.js can
-/// hold the Swift reader equal to the TypeScript one on the same cache file.
-if args.contains("--usage") {
-  let file = readUsageFile()
-  var payload: [String: Any] = [:]
-  if let q = file.quota {
-    payload["fetchedAt"] = q.fetchedAt
-    payload["scopes"] = q.scopes.map { s -> [String: Any] in
-      var o: [String: Any] = ["key": s.key, "label": s.label, "left": s.left]
-      if let r = s.resetsAt { o["resetsAt"] = r }
-      return o
-    }
-    if let b = q.binding { payload["binding"] = b.key }
-  }
-  payload["sessions"] = file.burn.values
-    .sorted { $0.sessionId < $1.sessionId }
-    .map { ["sessionId": $0.sessionId, "output": $0.output, "cacheRead": $0.cacheRead] }
-  let data = try! JSONSerialization.data(
-    withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
-  FileHandle.standardOutput.write(data)
-  FileHandle.standardOutput.write("\n".data(using: .utf8)!)
-  exit(0)
-}
+/// Swift allows top-level statements only in `main.swift` or a single-file module,
+/// and the HUD lives in its own file — so the entry point is an `@main` type rather
+/// than a rename. `macos/AgentClock.swift` is named in package.json's `files`, in
+/// test/menubar.test.js and in CLAUDE.md; none of that should move because a second
+/// source file appeared.
+@main
+enum AgentClockApp {
+  /// NSApplication holds its delegate weakly, so it lives here rather than on
+  /// main()'s stack.
+  private static let delegate = AppDelegate()
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-// Agent app: no Dock tile, no Force Quit entry. Equivalent to LSUIElement, and set
-// here too so the raw binary behaves the same as the bundle during development.
-app.setActivationPolicy(.accessory)
-app.run()
+  static func main() {
+    let args = CommandLine.arguments.dropFirst()
+    if args.contains("--json") {
+      emitJSON()
+      exit(0)
+    }
+    if args.contains("--count") {
+      print(headlessSnapshot().workingIds.count)
+      exit(0)
+    }
+    // The exact string the menu bar would show. Exists so test/menubar.test.js can
+    // assert on the badge itself rather than trusting it.
+    if args.contains("--badge") {
+      let s = headlessSnapshot()
+      print(badgeTitle(s.workingIds.count, s.fanOut, s.quotaLeft))
+      exit(0)
+    }
+    // The same for the HUD's pill, so the two renderers are held to the same counts.
+    if args.contains("--hud") {
+      print(hudSummary(headlessSnapshot()))
+      exit(0)
+    }
+    // The quota snapshot as this app reads it. Exists so test/menubar.test.js can
+    // hold the Swift reader equal to the TypeScript one on the same cache file.
+    if args.contains("--usage") {
+      let file = readUsageFile()
+      var payload: [String: Any] = [:]
+      if let q = file.quota {
+        payload["fetchedAt"] = q.fetchedAt
+        payload["scopes"] = q.scopes.map { s -> [String: Any] in
+          var o: [String: Any] = ["key": s.key, "label": s.label, "left": s.left]
+          if let r = s.resetsAt { o["resetsAt"] = r }
+          return o
+        }
+        if let b = q.binding { payload["binding"] = b.key }
+      }
+      payload["sessions"] = file.burn.values
+        .sorted { $0.sessionId < $1.sessionId }
+        .map { ["sessionId": $0.sessionId, "output": $0.output, "cacheRead": $0.cacheRead] }
+      let data = try! JSONSerialization.data(
+        withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+      FileHandle.standardOutput.write(data)
+      FileHandle.standardOutput.write("\n".data(using: .utf8)!)
+      exit(0)
+    }
+
+    let app = NSApplication.shared
+    app.delegate = delegate
+    // Agent app: no Dock tile, no Force Quit entry. Equivalent to LSUIElement, and
+    // set here too so the raw binary behaves the same as the bundle in development.
+    app.setActivationPolicy(.accessory)
+    app.run()
+  }
+}

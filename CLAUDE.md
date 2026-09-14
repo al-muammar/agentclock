@@ -50,10 +50,17 @@ usagecache.ts   ~/.agentclock/usage.json       → both of those, for the menu b
 render/         term.ts (ANSI) · html.ts + svg.ts (self-contained report)
                 pdf.ts (PDF primitives) + onepager.ts (one-page summary)
 
-macos/          AgentClock.swift — menu bar badge. Ships as SOURCE in the npm
-                package and is compiled on the user's machine by
-                `agentclock menubar`. One swiftc call, no Xcode project.
+macos/          AgentClock.swift — data (the Swift port), Snapshot, menu bar badge
+                HUD.swift        — the screen-edge panel: pill ⇄ card
+                Ships as SOURCE in the npm package and is compiled on the user's
+                machine by `agentclock menubar`. One swiftc call, both files, no
+                Xcode project.
 ```
+
+`refresh()` publishes one `Snapshot`; the badge and the HUD are two renderers of
+it. Nothing in `HUD.swift` reads the registry, the transcripts or the usage cache
+— that boundary is why one implementation, not two, has to be held equal to the
+TypeScript.
 
 Everything downstream of `stats.ts` consumes **spans**: half-open `[start, end)`
 intervals when a session was working.
@@ -100,7 +107,7 @@ intervals when a session was working.
   widths; without them nothing right-aligned lines up. The one-pager must never
   spill onto a second sheet: a section that cannot fit is dropped or summed, and
   `test/pdf.test.js` asserts `/Count 1` and that nothing is drawn off the page.
-- **The menu bar app duplicates the registry rules, and a test holds them equal.**
+- **The macOS app duplicates the registry rules, and a test holds them equal.**
   `macos/AgentClock.swift` reimplements `readLiveSessions()` and `subagents.ts`
   because spawning Node every two seconds costs ~130x more CPU than reading the
   directory (~130ms vs ~1ms). Change either one and you must change the Swift too;
@@ -118,6 +125,71 @@ intervals when a session was working.
   locally compiled code is never quarantined, so there is no Gatekeeper prompt and
   no paid certificate. That rules out `SMAppService`, which refuses ad-hoc
   signatures — launch-at-login writes a plain Aqua LaunchAgent instead.
+- **The HUD's silhouette is a drawn path, not a layer corner radius.**
+  `TabBackdrop` exists because `CALayer` can do neither thing the shape needs: the
+  concave flare where the tab meets the screen edge curves *outward*, and a layer
+  border has no way to leave one side unstroked. So the fill closes across the
+  screen edge and the stroke stops short of it — the tab is attached to that edge,
+  and an edge it is attached to is not an edge it should be outlined against. The
+  flare costs `HUDStyle.flare` of height at each end, which is why the panel is
+  taller than its content and the content insets itself to match; miss that inset
+  and every row shifts. Flush also makes it an edge target in the Fitts's-law
+  sense: the pointer cannot overshoot it. Position against `visibleFrame`, never
+  `frame`, so a right-hand Dock still pushes it clear.
+- **The badge and the tab follow different quota scopes, on purpose.** The badge
+  takes `binding` — the scope closest to exhaustion — because it is one line of
+  text with no room to name which limit it means, so it must show the one that
+  decides when work stops. The tab takes `five_hour` (`Snapshot.sessionQuota`)
+  because it is read all day and the weekly figure barely moves across one, and it
+  can afford to: the card behind it lists both, and always the binding scope.
+  `test/menubar.test.js` keeps a `state-split` fixture whose weekly limit is nearly
+  gone while the session window is untouched — the only fixture that can tell the
+  two renderers apart, since in the main one they coincide.
+- **Quota sits at the foot of the card, because that is where the tab puts it.**
+  The resting tab reads dots, then idle, then quota; the card it opens into must
+  not reorder the same three facts. **The card is also the one place that filters
+  quota scopes** — session and weekly only — which is a deliberate exception to
+  "unknown keys are never dropped". The CLI still shows every scope under its own
+  key, and the exception has its own exception: the binding scope is always
+  listed even when it is neither, because the tab's percentage follows it and a
+  number the list cannot account for is worse than a row nobody wanted.
+- **The HUD needs zero macOS permissions, and must keep needing zero.** Ad-hoc
+  signed code carries no stable designated requirement, so macOS cannot tell that
+  version N+1 is the same code as version N — and `agentclock menubar` recompiles
+  on the user's machine, which makes *every upgrade a new identity*. Any TCC grant
+  would have to be re-approved each time, and a stale row can suppress the prompt
+  rather than re-asking. Same family as the `SMAppService` refusal above. Nothing
+  used here needs consent: floating panels at any level, `.activeAlways` tracking
+  areas, mouse-only global monitors, `NSVisualEffectView`. What would: `CGEventTap`
+  (Input Monitoring), `AXObserver` (Accessibility), reading other windows' titles
+  (Screen Recording, which never prompts and silently returns nothing). Don't.
+- **The HUD never takes focus, and both halves are needed.**
+  `.nonactivatingPanel` stops the *app* activating; `canBecomeKey → false` stops
+  the *window* taking key. Either alone is not enough, and clicking a focus-taking
+  panel over a full-screen app throws the user back to the desktop Space. The
+  style mask must be passed at init — it is backed by a WindowServer tag set
+  during panel initialisation, so mutating `styleMask` later leaves AppKit and
+  WindowServer disagreeing. Also set `hidesOnDeactivate = false`: `NSPanel`
+  defaults it to `true` (unlike `NSWindow`), so left alone the HUD disappears
+  whenever another app comes forward, which is always.
+- **Hover needs a timeout as well as an exit event.** `mouseExited` is unreliable
+  at high cursor velocity and leaves the card stuck open; `HUDController` polls
+  point-in-rect every 500 ms with 16 pt of hysteresis as the backstop. Removing
+  the poll because "the tracking area already does that" is how it regresses.
+  And `mouseEntered` does not fire when the panel appears under an already-still
+  pointer — no boundary was crossed — hence `seedHover()`.
+- **Never touch `ignoresMouseEvents` on the live panel.** Per-pixel click-through
+  is the default for a borderless non-opaque window, and *assigning* that property
+  at all — including to `false` — permanently disables it. It is only for a parked
+  or hidden state.
+- **The HUD's colours are explicit alphas, not `labelColor` and friends.** The
+  panel is pinned to `.vibrantDark`, so semantic label colours are wrong twice:
+  they follow the system theme rather than the panel's, and they are tuned for
+  solid backgrounds — on a translucent HUD material `secondaryLabelColor` and
+  below wash out to unreadable. This was measured by looking at it; the first
+  draft's elapsed times were invisible. Teal / amber / grey match
+  `src/render/term.ts`, so the terminal and the HUD never disagree about what a
+  colour means.
 - **The menu bar app ships as source, never as a binary.** `agentclock menubar`
   compiles it on the user's machine; that is the whole reason there is no
   Gatekeeper prompt. `files` lists `macos` *and* `!macos/build`, because naming a
@@ -179,6 +251,15 @@ intervals when a session was working.
   one-pager.pdf --out one-pager.png`. `gs -o /dev/null -sDEVICE=nullpage` and
   `pdfinfo` are independent parsers worth running too — a bad xref offset still
   opens in Preview.
+- **Changed the HUD? Build it, run it, and look at it — on a light background and
+  a dark one.** `make -C macos run`, then point at the pill. Markup-equivalent
+  checks catch nothing here: the first draft passed `make check` and `npm test`
+  with half its text invisible. `--hud` prints the pill as a string, which pins
+  the counts but says nothing about whether you can read them.
+- **Added a Swift file? Add it to `test/menubar.test.js`'s rebuild list.** The
+  freshness check names its sources literally. Miss it and a stale binary is
+  reused, it does not know the new flags, an unrecognised flag falls through to
+  `app.run()`, and `npm test` hangs forever instead of failing.
 - Changed parsing or stats? Check it against a real `~/.claude` and compare the
   totals, not just that it runs. A full scan of ~700 MB should stay around 3s;
   if it doesn't, time the stages separately — the scan and the stats reduction

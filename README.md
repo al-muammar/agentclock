@@ -35,7 +35,7 @@ deleted after 30 days. agentclock turns what's on disk into an answer:
 inside their parent and share its session id, so this falls out of the data model
 rather than being a rule the tool applies.
 
-**Live, you see both.** `agentclock now` and the menu bar badge show how many
+**Live, you see both.** `agentclock now` and the macOS app show how many
 agents are running inside each session — `◐ 5 (12)` is five sessions working with
 twelve agents between them. A session whose only worker is a background agent
 counts as working, because it is.
@@ -50,7 +50,7 @@ agentclock watch          # live view, refreshing in place
 agentclock timeline       # per-day activity timeline
 agentclock stats          # historical summary in the terminal
 agentclock pdf            # one-page PDF summary, for sharing
-agentclock menubar        # install the macOS menu bar badge
+agentclock menubar        # install the macOS screen-edge HUD
 agentclock report --since 7d --anonymize -o week.html
 ```
 
@@ -129,19 +129,46 @@ It is a real PDF, written directly: no headless browser, no PDF library, and the
 text stays selectable. That keeps the install a single package with no runtime
 dependencies.
 
-### The macOS menu bar app
+### The macOS app
 
 ```sh
 agentclock menubar             # build and install it
 agentclock menubar uninstall   # remove it again
 ```
 
-Puts `◐ 4` in the menu bar: how many sessions are working right now, and `◐ 4 (9)`
-when there are subagents running inside them. Once you have run `agentclock usage`
-it also carries the limit closest to running out — `◐ 4 (9) · 42%`. Click it for
-the quota breakdown, then the list — which sessions, in which projects, for how
-long, what each has spent, and which agents it has out — plus *Open dashboard*,
-*Launch at login* and a smoothing setting.
+By default it puts a narrow black tab against the **right edge of your screen** —
+flush with the edge, rounded on its left side, square where it meets the edge. A
+teal dot for each session that is working, stacked one per session, a number for
+the ones sitting idle, and a ring for how much of your **session limit** is left —
+the five-hour window, the one that decides whether you can keep going this
+afternoon. Being on
+the edge makes it a target you cannot miss: throw the pointer right and it opens. Point at it
+and it opens into the full readout — every quota scope with its reset countdown,
+each working session with its project, its uptime, what it has spent and which
+agents it has out, and anything waiting on you pulled to the top. Click to pin it
+open, click a row to reveal that session's directory in Finder, right-click for the
+settings.
+
+The strip carries larger type than the card does, deliberately: it is read at a
+glance, from across a desk, and it is the only part on screen all the time. The
+card is read with the pointer already on it, and puts quota at its foot — the same
+place the strip does, so nothing moves when it opens.
+
+The card lists your session and weekly limits with their percentages and reset
+countdowns. `agentclock usage` in the terminal still shows every scope the server
+reports, including ones agentclock has no name for; the card keeps to the two you
+watch, plus whichever limit is currently the one binding.
+
+The menu bar badge, if you turn it on, still follows the limit closest to running
+out rather than the session one — it is a single line of text with no room to say
+which limit it means, so it shows the one that decides when work stops.
+
+With nothing running it fades back to almost nothing, and it never takes focus —
+you can hover it mid-sentence and keep typing.
+
+Prefer the menu bar? *Show → In the menu bar* puts the old badge back: `◐ 4`, or
+`◐ 4 (9)` when there are subagents running inside those four, or `◐ 4 (9) · 42%`
+once `agentclock usage` has fetched your quota. *Both* runs the two together.
 
 The app ships as source and is compiled on your machine — one `swiftc` call,
 about five seconds. That is deliberate: code compiled locally is never
@@ -172,8 +199,16 @@ permission prompt, where the agent hasn't stopped working and the badge shouldn'
 say it has. Sampling the registry at 4 Hz for ten minutes recorded no raw
 flicker at all — Claude Code holds `busy` for a whole turn rather than toggling
 between tool calls — which is why the window is deliberately short rather than a
-minute. Sessions in the tail are dimmed in the dropdown, so the smoothing is
-visible rather than a quiet fiction. Adjust it under *Smoothing*, or turn it off.
+minute. Sessions in the tail are dimmed — a faded dot on the pill, a faded row in
+the card — so the smoothing is visible rather than a quiet fiction. Adjust it under
+*Smoothing*, or turn it off.
+
+The pill is draggable along the edge and remembers where you put it. It stays
+visible over full-screen apps and across Spaces, and it needs no macOS permissions
+at all — no Accessibility, no Screen Recording. That last part is not incidental:
+the app is ad-hoc signed and recompiled on your machine, so every upgrade looks
+like new code to macOS, and any permission you granted would have to be granted
+again.
 
 Requires macOS 11+ and the Xcode Command Line Tools (`xcode-select --install`) —
 there is no Xcode project and nothing to download. `agentclock menubar` says so
@@ -293,7 +328,9 @@ there is picked up with no re-linking. Deleting a checkout that is currently
 linked leaves a dangling `agentclock`; `npm run unlink:local` first, or just
 re-link from wherever you want it.
 
-The menu bar app lives in `macos/` and builds with one `swiftc` call:
+The macOS app lives in `macos/` and builds with one `swiftc` call — two source
+files, `AgentClock.swift` (the data and the menu bar badge) and `HUD.swift` (the
+edge panel):
 
 ```sh
 npm run menubar:build       # -> macos/build/AgentClock.app
