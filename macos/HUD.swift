@@ -191,6 +191,20 @@ protocol HUDDelegate: AnyObject {
   func hudReveal(_ cwd: String)
 }
 
+// MARK: - Screens
+
+extension NSScreen {
+  /// The display's id, for remembering which screen the HUD was put on.
+  ///
+  /// `NSScreen` itself is not a durable handle — the objects are rebuilt on every
+  /// reconfiguration — and it has no public identity beyond this key. 0 for a screen
+  /// that somehow has no number, which no attached display has; it simply fails to
+  /// match, and the name is the other half of the key for exactly that reason.
+  var displayID: CGDirectDisplayID {
+    (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+  }
+}
+
 // MARK: - Panel
 
 /// Never key, never main, never activating.
@@ -295,13 +309,66 @@ final class HUDController: NSObject {
   private var screenDebounce: DispatchWorkItem?
 
   /// Where the pill sits on the right edge, as a fraction of the usable height.
-  /// Persisted so it stays where it was put.
+  /// Persisted so it stays where it was put. A fraction rather than a point so it
+  /// keeps its relative position when it moves to a screen of a different height.
   private var offset: CGFloat {
     get {
       let v = UserDefaults.standard.object(forKey: "hudOffset") as? Double
       return CGFloat(min(1, max(0, v ?? 0.5)))
     }
     set { UserDefaults.standard.set(Double(newValue), forKey: "hudOffset") }
+  }
+
+  /// Which display the tab lives on, remembered across launches.
+  ///
+  /// Stored by name *as well as* id: display ids are handed out per session, so a
+  /// monitor that is unplugged and reconnected — or a Mac that has been rebooted —
+  /// can come back under a different id and lose the preference. Neither key is
+  /// unique on its own (two identical monitors share a name), but the worst a wrong
+  /// guess can do is put the HUD on a screen the user is looking at, which is the
+  /// direction everything in this file fails in.
+  private var screenPref: (id: CGDirectDisplayID, name: String)? {
+    get {
+      let d = UserDefaults.standard
+      guard let name = d.string(forKey: "hudScreenName") else { return nil }
+      return (CGDirectDisplayID(d.integer(forKey: "hudScreenID")), name)
+    }
+    set {
+      let d = UserDefaults.standard
+      guard let v = newValue else {
+        d.removeObject(forKey: "hudScreenID")
+        d.removeObject(forKey: "hudScreenName")
+        return
+      }
+      d.set(Int(v.id), forKey: "hudScreenID")
+      d.set(v.name, forKey: "hudScreenName")
+    }
+  }
+
+  /// The screen everything positions against: the remembered one while it is
+  /// attached, otherwise whatever is.
+  ///
+  /// A miss does not clear the preference — an unplugged monitor should get the HUD
+  /// back when it returns, and `screensChanged` re-places on both halves of that.
+  private var targetScreen: NSScreen? {
+    let screens = NSScreen.screens
+    guard let pref = screenPref else { return panel.screen ?? NSScreen.main ?? screens.first }
+    return screens.first(where: { $0.displayID == pref.id })
+      ?? screens.first(where: { $0.localizedName == pref.name })
+      ?? NSScreen.main ?? screens.first
+  }
+
+  /// Whether the tab is on this screen — for the context menu's checkmark.
+  func isOn(_ screen: NSScreen) -> Bool { targetScreen?.displayID == screen.displayID }
+
+  /// Menu-driven equivalent of dragging the tab onto another display, and not a
+  /// duplicate of it: the drag is a gesture nothing on screen advertises, and the
+  /// first thing a two-screen user discovers is that it used to do nothing.
+  func move(to screen: NSScreen) {
+    screenPref = (screen.displayID, screen.localizedName)
+    // Not animated: between screens the interpolated frames sweep across the
+    // desktop, which reads as the panel escaping rather than being moved.
+    place(animated: false)
   }
 
   override init() {
@@ -395,13 +462,18 @@ final class HUDController: NSObject {
 
   // MARK: Placement
 
-  /// Right edge, at the stored vertical offset, clamped to the usable area.
+  /// Right edge of the chosen screen, at the stored vertical offset, clamped to the
+  /// usable area.
   ///
   /// visibleFrame rather than frame throughout: frame includes the menu bar and the
   /// Dock, and the one shipping app with a permanent edge strip gets this wrong and
   /// sits on top of a right-hand Dock.
+  ///
+  /// `targetScreen`, never `panel.screen`: the panel's own screen is wherever it
+  /// already is, so reading position back out of it is what pinned the HUD to one
+  /// display for good.
   private func place(animated: Bool) {
-    guard let vf = (panel.screen ?? NSScreen.main)?.visibleFrame else { return }
+    guard let vf = targetScreen?.visibleFrame else { return }
     let content = expanded ? view.cardSize : view.pillSize
     let size = NSSize(width: content.width, height: content.height + HUDStyle.flare * 2)
     // visibleFrame, never frame: that is what clears a right-hand Dock.
@@ -571,11 +643,24 @@ final class HUDController: NSObject {
   func openDashboard() { delegate?.hudOpenDashboard() }
   func reveal(_ cwd: String) { delegate?.hudReveal(cwd) }
 
-  /// Drag along the right edge. Horizontal movement is ignored on purpose: the
-  /// whole design is anchored to the edge, and a HUD floating in open space is a
-  /// different thing than the one that was asked for.
+  /// Drag along the right edge — and, across a screen boundary, onto the right edge
+  /// of another display.
+  ///
+  /// Horizontal movement still never floats the tab off an edge: the whole design is
+  /// anchored to one, and a HUD in open space is a different thing than the one that
+  /// was asked for. What the horizontal axis does is choose *which* screen's edge.
+  /// Dragging the tab onto the other monitor is the first gesture a two-screen user
+  /// tries, and ignoring x outright meant it silently did nothing.
   func drag(to location: NSPoint) {
-    guard let vf = (panel.screen ?? NSScreen.main)?.visibleFrame else { return }
+    // The screen under the pointer, not under the panel: the pointer crosses the
+    // boundary first, and it is the thing the user is aiming with.
+    guard let screen = NSScreen.screens.first(where: { $0.frame.contains(location) })
+        ?? targetScreen
+    else { return }
+    if screen.displayID != screenPref?.id {
+      screenPref = (screen.displayID, screen.localizedName)
+    }
+    let vf = screen.visibleFrame
     let content = expanded ? view.cardSize : view.pillSize
     let size = NSSize(width: content.width, height: content.height + HUDStyle.flare * 2)
     let lo = vf.minY + 50
@@ -583,7 +668,9 @@ final class HUDController: NSObject {
     let span = max(1, hi - lo)
     let y = min(hi, max(lo, location.y - size.height / 2))
     offset = 1 - (y - lo) / span
-    panel.setFrameOrigin(NSPoint(x: panel.frame.minX, y: y))
+    // x from the screen rather than the panel's current minX, so crossing onto
+    // another display snaps to that display's edge instead of hanging in its middle.
+    panel.setFrameOrigin(NSPoint(x: vf.maxX - size.width - HUDStyle.edgeMargin, y: y))
   }
 }
 

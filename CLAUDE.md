@@ -136,6 +136,18 @@ intervals when a session was working.
   and every row shifts. Flush also makes it an edge target in the Fitts's-law
   sense: the pointer cannot overshoot it. Position against `visibleFrame`, never
   `frame`, so a right-hand Dock still pushes it clear.
+- **The HUD's screen is a stored preference, never wherever the panel already is.**
+  `place()` positions against `targetScreen`, not `panel.screen`: reading the screen
+  back out of the panel makes the position self-fulfilling, and that is exactly how
+  the tab came to be stuck on the display it launched on with no way off it — the
+  drag ignored the horizontal axis outright. It still never floats the tab away from
+  an edge; horizontal movement only chooses *which* screen's edge, and it follows the
+  pointer's screen rather than the panel's, because the pointer crosses the boundary
+  first. The preference is stored by display **id and name**: ids are handed out per
+  session, so a monitor that is unplugged, or a Mac that is rebooted, can come back
+  under a different one. A remembered screen that is missing falls back to the main
+  one *without clearing the preference*, so the HUD goes home when that display
+  returns.
 - **The badge and the tab follow different quota scopes, on purpose.** The badge
   takes `binding` — the scope closest to exhaustion — because it is one line of
   text with no room to name which limit it means, so it must show the one that
