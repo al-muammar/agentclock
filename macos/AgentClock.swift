@@ -1019,6 +1019,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HUDDel
 
     menu.addItem(smoothingMenu())
     menu.addItem(displayMenu())
+    // Also here, not only in the HUD's own menu: the status item is the easier
+    // thing to click, and it is where someone goes looking when the HUD is on a
+    // screen they want it off.
+    if let screens = screenMenu() { menu.addItem(screens) }
 
     let login = NSMenuItem(
       title: "Launch at login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
@@ -1050,6 +1054,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HUDDel
       i.target = self
       i.representedObject = value
       i.state = smoother.hold == value ? .on : .off
+      sub.addItem(i)
+    }
+    parent.submenu = sub
+    return parent
+  }
+
+  /// Which screen the HUD sits on. Absent on a one-screen Mac: a menu for a choice
+  /// that does not exist is noise, and the item reappears the moment a display is
+  /// plugged in.
+  private func screenMenu() -> NSMenuItem? {
+    let screens = NSScreen.screens
+    guard screens.count > 1, let hud = hud else { return nil }
+    let parent = NSMenuItem(title: "Screen", action: nil, keyEquivalent: "")
+    let sub = NSMenu()
+    for screen in screens {
+      let i = NSMenuItem(
+        title: screen.localizedName, action: #selector(setHUDScreen(_:)), keyEquivalent: "")
+      i.target = self
+      // By id, not by index: `NSScreen.screens` is rebuilt on every reconfiguration,
+      // and a menu left open across one would otherwise point at the wrong display.
+      i.representedObject = NSNumber(value: screen.displayID)
+      i.state = hud.isOn(screen) ? .on : .off
       sub.addItem(i)
     }
     parent.submenu = sub
@@ -1089,6 +1115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HUDDel
     menu.addItem(.separator())
     menu.addItem(smoothingMenu())
     menu.addItem(displayMenu())
+    if let screens = screenMenu() { menu.addItem(screens) }
     let login = NSMenuItem(
       title: "Launch at login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
     login.target = self
@@ -1104,6 +1131,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HUDDel
 
   func hudReveal(_ cwd: String) {
     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: cwd)
+  }
+
+  @objc private func setHUDScreen(_ sender: NSMenuItem) {
+    guard let id = (sender.representedObject as? NSNumber)?.uint32Value,
+      let screen = NSScreen.screens.first(where: { $0.displayID == id })
+    else { return }
+    hud?.move(to: screen)
   }
 
   @objc private func setDisplayMode(_ sender: NSMenuItem) {
