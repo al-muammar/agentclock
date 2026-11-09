@@ -873,9 +873,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HUDDel
     DispatchQueue.global(qos: .utility).async { [weak self] in
       defer { self?.refreshingQuota = false }
       guard let bin = AgentClockCLI.resolve() else { return }
-      let p = Process()
-      p.executableURL = URL(fileURLWithPath: bin)
-      p.arguments = ["usage", "--json"]
+      let p = AgentClockCLI.process(bin, ["usage", "--json"])
       p.standardOutput = FileHandle.nullDevice
       p.standardError = FileHandle.nullDevice
       guard (try? p.run()) != nil else { return }
@@ -1169,10 +1167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HUDDel
       a.runModal()
       return
     }
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: bin)
-    p.arguments = ["report"]
-    try? p.run()
+    try? AgentClockCLI.process(bin, ["report"]).run()
   }
 
   @objc private func toggleLaunchAtLogin() {
@@ -1206,6 +1201,30 @@ enum AgentClockCLI {
     p.waitUntilExit()
     let path = out.trimmingCharacters(in: .whitespacesAndNewlines)
     return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+  }
+
+  /// A process for the CLI that can actually start.
+  ///
+  /// Finding `agentclock` is only half of it: the CLI is a `#!/usr/bin/env node`
+  /// script, and under launch-at-login the app has launchd's PATH
+  /// (`/usr/bin:/bin:/usr/sbin:/sbin`), which has no node on it. Every spawn then
+  /// exited 127 into a null stderr, and the quota froze at whatever the last
+  /// terminal-launched run wrote — silently, from the first reboot on. Node is
+  /// installed beside the command in every layout that puts `agentclock` on a
+  /// PATH (Homebrew, nvm, volta, an npm prefix), so the command's own directory
+  /// goes first.
+  static func process(_ bin: String, _ arguments: [String]) -> Process {
+    var env = ProcessInfo.processInfo.environment
+    let dirs = [
+      (bin as NSString).deletingLastPathComponent, "/opt/homebrew/bin", "/usr/local/bin",
+      env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+    ]
+    env["PATH"] = dirs.joined(separator: ":")
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: bin)
+    p.arguments = arguments
+    p.environment = env
+    return p
   }
 }
 

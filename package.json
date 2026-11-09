@@ -1,6 +1,6 @@
 {
   "name": "agentclock",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "See how many Claude Code sessions you run, how many are actually working, and how long they live.",
   "keywords": [
     "claude",
