@@ -6,6 +6,23 @@ follows [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-11-09
+
+### Fixed
+
+- **Session and weekly quota no longer freeze after a reboot.** When the menu bar
+  app was started at login, it could not run the `agentclock` command it asks for
+  fresh quota — login items get a bare `PATH` with no `node` on it — so every
+  refresh failed silently and the readout kept showing whatever it last fetched.
+  It only worked while the app had been launched from a terminal. The app now puts
+  the command's own directory on the `PATH` it hands over, which is where `node`
+  lives for Homebrew, nvm, volta and npm-prefix installs alike.
+- **Open dashboard** from the menu failed the same way after a reboot, and is
+  fixed by the same change.
+
+Upgrading: `npm install -g agentclock@latest --prefer-online`, then
+`agentclock menubar` to rebuild the app.
+
 ## [0.6.1] — 2026-09-14
 
 ### Fixed
@@ -230,7 +247,8 @@ own `turn_duration.durationMs` — it is exact or absent, never estimated. Only
 `agentclock usage` touches the network, and only to read your own quota; nothing
 about your code, your projects or your sessions is sent anywhere.
 
-[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/al-muammar/agentclock/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/al-muammar/agentclock/releases/tag/v0.6.2
 [0.6.1]: https://github.com/al-muammar/agentclock/releases/tag/v0.6.1
 [0.6.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.6.0
 [0.5.0]: https://github.com/al-muammar/agentclock/releases/tag/v0.5.0
